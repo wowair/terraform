@@ -61,7 +61,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 		Port:     d.Get("port").(int),
 		Username: d.Get("username").(string),
 		Password: d.Get("password").(string),
-		SslMode:  d.Get("ssl_mode").(string),
+		SslMode:  d.Get("sslmode").(string),
 	}
 
 	client, err := config.NewClient()
