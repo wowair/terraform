@@ -1,6 +1,9 @@
 package postgresql
 
 import (
+	"bytes"
+	"fmt"
+
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
@@ -57,11 +60,12 @@ func Provider() terraform.ResourceProvider {
 
 func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	config := Config{
-		Host:     d.Get("host").(string),
-		Port:     d.Get("port").(int),
-		Username: d.Get("username").(string),
-		Password: d.Get("password").(string),
+		Host:              d.Get("host").(string),
+		Port:              d.Get("port").(int),
+		Username:          d.Get("username").(string),
+		Password:          d.Get("password").(string),
 		SslMode:  d.Get("sslmode").(string),
+		ApplicationName:   tfAppName(),
 	}
 
 	client, err := config.NewClient()
@@ -70,4 +74,17 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	}
 
 	return client, nil
+}
+
+func tfAppName() string {
+	const VersionPrerelease = terraform.VersionPrerelease
+	var versionString bytes.Buffer
+
+	fmt.Fprintf(&versionString, "'Terraform v%s", terraform.Version)
+	if terraform.VersionPrerelease != "" {
+		fmt.Fprintf(&versionString, "-%s", terraform.VersionPrerelease)
+	}
+	fmt.Fprintf(&versionString, "'")
+
+	return versionString.String()
 }
