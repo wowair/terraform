@@ -21,7 +21,7 @@ provider "postgresql" {
   database = "postgres"
   username = "postgres_user"
   password = "postgres_password"
-  ssl_mode = "require"
+  sslmode = "require"
 }
 
 ```
@@ -64,6 +64,12 @@ The following arguments are supported:
 * `database` - (Optional) Database to connect to. The default is `postgres`.
 * `username` - (Required) Username for the server connection.
 * `password` - (Optional) Password for the server connection.
-* `ssl_mode` - (Optional) Set the priority for an SSL connection to the server.
-  The default is `prefer`; the full set of options and their implications
-  can be seen [in the libpq SSL guide](http://www.postgresql.org/docs/9.4/static/libpq-ssl.html#LIBPQ-SSL-PROTECTION).
+* `sslmode` - (Optional) Set the priority for an SSL connection to the server.
+  Valid values for `sslmode` are (note: `prefer` is not supported by Go's
+  [`lib/pq`](https://godoc.org/github.com/lib/pq)):
+    * disable - No SSL
+    * require - Always SSL (the default, also skip verification)
+    * verify-ca - Always SSL (verify that the certificate presented by the server was signed by a trusted CA)
+    * verify-full - Always SSL (verify that the certification presented by the server was signed by a trusted CA and the server host name matches the one in the certificate)
+  Additional information on the options and their implications can be seen
+  [in the `libpq(3)` SSL guide](http://www.postgresql.org/docs/current/static/libpq-ssl.html#LIBPQ-SSL-PROTECTION).

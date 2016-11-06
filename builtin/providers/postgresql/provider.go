@@ -52,6 +52,11 @@ func Provider() terraform.ResourceProvider {
 				DefaultFunc: schema.EnvDefaultFunc("PGSSLMODE", nil),
 				Description: "This option determines whether or with what priority a secure SSL TCP/IP connection will be negotiated with the PostgreSQL server",
 			},
+			"ssl_mode": {
+				Type:       schema.TypeString,
+				Optional:   true,
+				Deprecated: "Rename PostgreSQL provider `ssl_mode` attribute to `sslmode`",
+			},
 		},
 
 		ResourcesMap: map[string]*schema.Resource{
@@ -65,13 +70,18 @@ func Provider() terraform.ResourceProvider {
 }
 
 func providerConfigure(d *schema.ResourceData) (interface{}, error) {
+	var sslMode string
+	var ok bool
+	if sslMode, ok = d.GetOk("sslmode").(string); !ok {
+		sslMode = d.Get("ssl_mode").(string)
+	}
 	config := Config{
 		Host:              d.Get("host").(string),
 		Port:              d.Get("port").(int),
 		Database:          d.Get("database").(string),
 		Username:          d.Get("username").(string),
 		Password:          d.Get("password").(string),
-		SslMode:  d.Get("sslmode").(string),
+		SSLMode:           sslMode,
 		ApplicationName:   tfAppName(),
 	}
 
