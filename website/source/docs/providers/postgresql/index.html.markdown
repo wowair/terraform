@@ -73,3 +73,5 @@ The following arguments are supported:
     * verify-full - Always SSL (verify that the certification presented by the server was signed by a trusted CA and the server host name matches the one in the certificate)
   Additional information on the options and their implications can be seen
   [in the `libpq(3)` SSL guide](http://www.postgresql.org/docs/current/static/libpq-ssl.html#LIBPQ-SSL-PROTECTION).
+* `connect_timeout` - (Optional) Maximum wait for connection, in seconds. The
+  default is `180s`.  Zero or not specified means wait indefinitely.
