@@ -18,6 +18,7 @@ Use the navigation to the left to read about the available resources.
 provider "postgresql" {
   host = "postgres_server_ip"
   port = 5432
+  database = "postgres"
   username = "postgres_user"
   password = "postgres_password"
   ssl_mode = "require"
@@ -60,6 +61,7 @@ The following arguments are supported:
 
 * `host` - (Required) The address for the postgresql server connection.
 * `port` - (Optional) The port for the postgresql server connection. The default is `5432`.
+* `database` - (Optional) Database to connect to. The default is `postgres`.
 * `username` - (Required) Username for the server connection.
 * `password` - (Optional) Password for the server connection.
 * `ssl_mode` - (Optional) Set the priority for an SSL connection to the server.
