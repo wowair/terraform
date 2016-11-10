@@ -23,6 +23,25 @@ func resourceDockerImageCreate(d *schema.ResourceData, meta interface{}) error {
 
 func resourceDockerImageRead(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*dc.Client)
+	var data Data
+	if err := fetchLocalImages(&data, client); err != nil {
+		return fmt.Errorf("Error reading docker image list: %s", err)
+	}
+	foundImage := searchLocalImages(data, d.Get("name").(string))
+
+	if foundImage != nil {
+		d.Set("latest", foundImage.ID)
+	} else {
+		d.SetId("")
+	}
+
+	return nil
+}
+
+func resourceDockerImageUpdate(d *schema.ResourceData, meta interface{}) error {
+	// We need to re-read in case switching parameters affects
+	// the value of "latest" or others
+	client := meta.(*dc.Client)
 	apiImage, err := findImage(d, client)
 	if err != nil {
 		return fmt.Errorf("Unable to read Docker image into resource: %s", err)
@@ -33,15 +52,52 @@ func resourceDockerImageRead(d *schema.ResourceData, meta interface{}) error {
 	return nil
 }
 
-func resourceDockerImageUpdate(d *schema.ResourceData, meta interface{}) error {
-	// We need to re-read in case switching parameters affects
-	// the value of "latest" or others
-
-	return resourceDockerImageRead(d, meta)
+func resourceDockerImageDelete(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*dc.Client)
+	err := removeImage(d, client)
+	if err != nil {
+		return fmt.Errorf("Unable to remove Docker image: %s", err)
+	}
+	d.SetId("")
+	return nil
 }
 
-func resourceDockerImageDelete(d *schema.ResourceData, meta interface{}) error {
-	d.SetId("")
+func searchLocalImages(data Data, imageName string) *dc.APIImages {
+	if apiImage, ok := data.DockerImages[imageName]; ok {
+		return apiImage
+	}
+	if apiImage, ok := data.DockerImages[imageName+":latest"]; ok {
+		imageName = imageName + ":latest"
+		return apiImage
+	}
+	return nil
+}
+
+func removeImage(d *schema.ResourceData, client *dc.Client) error {
+	var data Data
+
+	if keepLocally := d.Get("keep_locally").(bool); keepLocally {
+		return nil
+	}
+
+	if err := fetchLocalImages(&data, client); err != nil {
+		return err
+	}
+
+	imageName := d.Get("name").(string)
+	if imageName == "" {
+		return fmt.Errorf("Empty image name is not allowed")
+	}
+
+	foundImage := searchLocalImages(data, imageName)
+
+	if foundImage != nil {
+		err := client.RemoveImage(foundImage.ID)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -73,6 +129,17 @@ func pullImage(data *Data, client *dc.Client, image string) error {
 	// TODO: Test local registry handling. It should be working
 	// based on the code that was ported over
 
+	pullOpts := parseImageOptions(image)
+	auth := dc.AuthConfiguration{}
+
+	if err := client.PullImage(pullOpts, auth); err != nil {
+		return fmt.Errorf("Error pulling image %s: %s\n", image, err)
+	}
+
+	return fetchLocalImages(data, client)
+}
+
+func parseImageOptions(image string) dc.PullImageOptions {
 	pullOpts := dc.PullImageOptions{}
 
 	splitImageName := strings.Split(image, ":")
@@ -107,32 +174,7 @@ func pullImage(data *Data, client *dc.Client, image string) error {
 		pullOpts.Repository = image
 	}
 
-	if err := client.PullImage(pullOpts, dc.AuthConfiguration{}); err != nil {
-		return fmt.Errorf("Error pulling image %s: %s\n", image, err)
-	}
-
-	return fetchLocalImages(data, client)
-}
-
-func getImageTag(image string) string {
-	splitImageName := strings.Split(image, ":")
-	switch {
-
-	// It's in registry:port/repo:tag format
-	case len(splitImageName) == 3:
-		return splitImageName[2]
-
-	// It's either registry:port/repo or repo:tag with default registry
-	case len(splitImageName) == 2:
-		splitPortRepo := strings.Split(splitImageName[1], "/")
-		if len(splitPortRepo) == 2 {
-			return ""
-		} else {
-			return splitImageName[1]
-		}
-	}
-
-	return ""
+	return pullOpts
 }
 
 func findImage(d *schema.ResourceData, client *dc.Client) (*dc.APIImages, error) {
@@ -146,26 +188,15 @@ func findImage(d *schema.ResourceData, client *dc.Client) (*dc.APIImages, error)
 		return nil, fmt.Errorf("Empty image name is not allowed")
 	}
 
-	searchLocal := func() *dc.APIImages {
-		if apiImage, ok := data.DockerImages[imageName]; ok {
-			return apiImage
-		}
-		if apiImage, ok := data.DockerImages[imageName+":latest"]; ok {
-			imageName = imageName + ":latest"
-			return apiImage
-		}
-		return nil
-	}
+	foundImage := searchLocalImages(data, imageName)
 
-	foundImage := searchLocal()
-
-	if d.Get("keep_updated").(bool) || foundImage == nil {
+	if foundImage == nil {
 		if err := pullImage(&data, client, imageName); err != nil {
 			return nil, fmt.Errorf("Unable to pull image %s: %s", imageName, err)
 		}
 	}
 
-	foundImage = searchLocal()
+	foundImage = searchLocalImages(data, imageName)
 	if foundImage != nil {
 		return foundImage, nil
 	}

@@ -39,21 +39,94 @@ func (t *ProvisionerTransformer) Transform(g *Graph) error {
 	m := provisionerVertexMap(g)
 	for _, v := range g.Vertices() {
 		if pv, ok := v.(GraphNodeProvisionerConsumer); ok {
-			for _, provisionerName := range pv.ProvisionedBy() {
-				target := m[provisionerName]
-				if target == nil {
+			for _, p := range pv.ProvisionedBy() {
+				key := provisionerMapKey(p, pv)
+				if m[key] == nil {
 					err = multierror.Append(err, fmt.Errorf(
 						"%s: provisioner %s couldn't be found",
-						dag.VertexName(v), provisionerName))
+						dag.VertexName(v), p))
 					continue
 				}
 
-				g.Connect(dag.BasicEdge(v, target))
+				g.Connect(dag.BasicEdge(v, m[key]))
 			}
 		}
 	}
 
 	return err
+}
+
+// MissingProvisionerTransformer is a GraphTransformer that adds nodes
+// for missing provisioners into the graph.
+type MissingProvisionerTransformer struct {
+	// Provisioners is the list of provisioners we support.
+	Provisioners []string
+}
+
+func (t *MissingProvisionerTransformer) Transform(g *Graph) error {
+	// Create a set of our supported provisioners
+	supported := make(map[string]struct{}, len(t.Provisioners))
+	for _, v := range t.Provisioners {
+		supported[v] = struct{}{}
+	}
+
+	// Get the map of provisioners we already have in our graph
+	m := provisionerVertexMap(g)
+
+	// Go through all the provisioner consumers and make sure we add
+	// that provisioner if it is missing.
+	for _, v := range g.Vertices() {
+		pv, ok := v.(GraphNodeProvisionerConsumer)
+		if !ok {
+			continue
+		}
+
+		// If this node has a subpath, then we use that as a prefix
+		// into our map to check for an existing provider.
+		var path []string
+		if sp, ok := pv.(GraphNodeSubPath); ok {
+			raw := normalizeModulePath(sp.Path())
+			if len(raw) > len(rootModulePath) {
+				path = raw
+			}
+		}
+
+		for _, p := range pv.ProvisionedBy() {
+			// Build the key for storing in the map
+			key := provisionerMapKey(p, pv)
+
+			if _, ok := m[key]; ok {
+				// This provisioner already exists as a configure node
+				continue
+			}
+
+			if _, ok := supported[p]; !ok {
+				// If we don't support the provisioner type, skip it.
+				// Validation later will catch this as an error.
+				continue
+			}
+
+			// Build the vertex
+			var newV dag.Vertex = &graphNodeProvisioner{ProvisionerNameValue: p}
+			if len(path) > 0 {
+				// If we have a path, we do the flattening immediately. This
+				// is to support new-style graph nodes that are already
+				// flattened.
+				if fn, ok := newV.(GraphNodeFlattenable); ok {
+					var err error
+					newV, err = fn.Flatten(path)
+					if err != nil {
+						return err
+					}
+				}
+			}
+
+			// Add the missing provisioner node to the graph
+			m[key] = g.Add(newV)
+		}
+	}
+
+	return nil
 }
 
 // CloseProvisionerTransformer is a GraphTransformer that adds nodes to the
@@ -87,49 +160,18 @@ func (t *CloseProvisionerTransformer) Transform(g *Graph) error {
 	return nil
 }
 
-// MissingProvisionerTransformer is a GraphTransformer that adds nodes
-// for missing provisioners into the graph. Specifically, it creates provisioner
-// configuration nodes for all the provisioners that we support. These are
-// pruned later during an optimization pass.
-type MissingProvisionerTransformer struct {
-	// Provisioners is the list of provisioners we support.
-	Provisioners []string
-}
-
-func (t *MissingProvisionerTransformer) Transform(g *Graph) error {
-	m := provisionerVertexMap(g)
-	for _, p := range t.Provisioners {
-		if _, ok := m[p]; ok {
-			// This provisioner already exists as a configured node
-			continue
-		}
-
-		// Add our own missing provisioner node to the graph
-		g.Add(&graphNodeMissingProvisioner{ProvisionerNameValue: p})
-	}
-
-	return nil
-}
-
-// PruneProvisionerTransformer is a GraphTransformer that prunes all the
-// provisioners that aren't needed from the graph. A provisioner is unneeded if
-// no resource or module is using that provisioner.
-type PruneProvisionerTransformer struct{}
-
-func (t *PruneProvisionerTransformer) Transform(g *Graph) error {
-	for _, v := range g.Vertices() {
-		// We only care about the provisioners
-		if _, ok := v.(GraphNodeProvisioner); !ok {
-			continue
-		}
-
-		// Does anything depend on this? If not, then prune it.
-		if s := g.UpEdges(v); s.Len() == 0 {
-			g.Remove(v)
+// provisionerMapKey is a helper that gives us the key to use for the
+// maps returned by things such as provisionerVertexMap.
+func provisionerMapKey(k string, v dag.Vertex) string {
+	pathPrefix := ""
+	if sp, ok := v.(GraphNodeSubPath); ok {
+		raw := normalizeModulePath(sp.Path())
+		if len(raw) > len(rootModulePath) {
+			pathPrefix = modulePrefixStr(raw) + "."
 		}
 	}
 
-	return nil
+	return pathPrefix + k
 }
 
 func provisionerVertexMap(g *Graph) map[string]dag.Vertex {
@@ -171,49 +213,49 @@ func (n *graphNodeCloseProvisioner) CloseProvisionerName() string {
 	return n.ProvisionerNameValue
 }
 
-type graphNodeMissingProvisioner struct {
+type graphNodeProvisioner struct {
 	ProvisionerNameValue string
 }
 
-func (n *graphNodeMissingProvisioner) Name() string {
+func (n *graphNodeProvisioner) Name() string {
 	return fmt.Sprintf("provisioner.%s", n.ProvisionerNameValue)
 }
 
 // GraphNodeEvalable impl.
-func (n *graphNodeMissingProvisioner) EvalTree() EvalNode {
+func (n *graphNodeProvisioner) EvalTree() EvalNode {
 	return &EvalInitProvisioner{Name: n.ProvisionerNameValue}
 }
 
-func (n *graphNodeMissingProvisioner) ProvisionerName() string {
+func (n *graphNodeProvisioner) ProvisionerName() string {
 	return n.ProvisionerNameValue
 }
 
 // GraphNodeFlattenable impl.
-func (n *graphNodeMissingProvisioner) Flatten(p []string) (dag.Vertex, error) {
-	return &graphNodeMissingProvisionerFlat{
-		graphNodeMissingProvisioner: n,
-		PathValue:                   p,
+func (n *graphNodeProvisioner) Flatten(p []string) (dag.Vertex, error) {
+	return &graphNodeProvisionerFlat{
+		graphNodeProvisioner: n,
+		PathValue:            p,
 	}, nil
 }
 
 // Same as graphNodeMissingProvisioner, but for flattening
-type graphNodeMissingProvisionerFlat struct {
-	*graphNodeMissingProvisioner
+type graphNodeProvisionerFlat struct {
+	*graphNodeProvisioner
 
 	PathValue []string
 }
 
-func (n *graphNodeMissingProvisionerFlat) Name() string {
+func (n *graphNodeProvisionerFlat) Name() string {
 	return fmt.Sprintf(
-		"%s.%s", modulePrefixStr(n.PathValue), n.graphNodeMissingProvisioner.Name())
+		"%s.%s", modulePrefixStr(n.PathValue), n.graphNodeProvisioner.Name())
 }
 
-func (n *graphNodeMissingProvisionerFlat) Path() []string {
+func (n *graphNodeProvisionerFlat) Path() []string {
 	return n.PathValue
 }
 
-func (n *graphNodeMissingProvisionerFlat) ProvisionerName() string {
+func (n *graphNodeProvisionerFlat) ProvisionerName() string {
 	return fmt.Sprintf(
 		"%s.%s", modulePrefixStr(n.PathValue),
-		n.graphNodeMissingProvisioner.ProvisionerName())
+		n.graphNodeProvisioner.ProvisionerName())
 }

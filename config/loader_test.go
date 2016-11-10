@@ -8,6 +8,10 @@ import (
 	"testing"
 )
 
+func TestErrNoConfigsFound_impl(t *testing.T) {
+	var _ error = new(ErrNoConfigsFound)
+}
+
 func TestIsEmptyDir(t *testing.T) {
 	val, err := IsEmptyDir(fixtureDir)
 	if err != nil {
@@ -60,6 +64,17 @@ func TestLoadFile_resourceArityMistake(t *testing.T) {
 		t.Fatal("should have error")
 	}
 	expected := "Error loading test-fixtures/resource-arity-mistake.tf: position 2:10: resource must be followed by exactly two strings, a type and a name"
+	if err.Error() != expected {
+		t.Fatalf("expected:\n%s\ngot:\n%s", expected, err)
+	}
+}
+
+func TestLoadFile_dataSourceArityMistake(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "data-source-arity-mistake.tf"))
+	if err == nil {
+		t.Fatal("should have error")
+	}
+	expected := "Error loading test-fixtures/data-source-arity-mistake.tf: position 2:6: 'data' must be followed by exactly two strings: a type and a name"
 	if err.Error() != expected {
 		t.Fatalf("expected:\n%s\ngot:\n%s", expected, err)
 	}
@@ -121,22 +136,13 @@ func TestLoadFileHeredoc(t *testing.T) {
 }
 
 func TestLoadFileEscapedQuotes(t *testing.T) {
-	c, err := LoadFile(filepath.Join(fixtureDir, "escapedquotes.tf"))
-	if err != nil {
-		t.Fatalf("err: %s", err)
+	_, err := LoadFile(filepath.Join(fixtureDir, "escapedquotes.tf"))
+	if err == nil {
+		t.Fatalf("expected syntax error as escaped quotes are no longer supported")
 	}
 
-	if c == nil {
-		t.Fatal("config should not be nil")
-	}
-
-	if c.Dir != "" {
-		t.Fatalf("bad: %#v", c.Dir)
-	}
-
-	actual := resourcesStr(c.Resources)
-	if actual != strings.TrimSpace(escapedquotesResourcesStr) {
-		t.Fatalf("bad:\n%s", actual)
+	if !strings.Contains(err.Error(), "syntax error") {
+		t.Fatalf("expected \"syntax error\", got: %s", err)
 	}
 }
 
@@ -325,6 +331,69 @@ func TestLoadJSONBasic(t *testing.T) {
 	}
 }
 
+func TestLoadJSONAmbiguous(t *testing.T) {
+	js := `
+{
+  "variable": {
+    "first": {
+      "default": {
+        "key": "val"
+      }
+    },
+    "second": {
+      "description": "Described",
+      "default": {
+        "key": "val"
+      }
+    }
+  }
+}
+`
+
+	c, err := LoadJSON([]byte(js))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if len(c.Variables) != 2 {
+		t.Fatal("config should have 2 variables, found", len(c.Variables))
+	}
+
+	first := &Variable{
+		Name:    "first",
+		Default: map[string]interface{}{"key": "val"},
+	}
+	second := &Variable{
+		Name:        "second",
+		Description: "Described",
+		Default:     map[string]interface{}{"key": "val"},
+	}
+
+	if !reflect.DeepEqual(first, c.Variables[0]) {
+		t.Fatalf("\nexpected: %#v\ngot:      %#v", first, c.Variables[0])
+	}
+
+	if !reflect.DeepEqual(second, c.Variables[1]) {
+		t.Fatalf("\nexpected: %#v\ngot:      %#v", second, c.Variables[1])
+	}
+}
+
+func TestLoadFileBasic_jsonNoName(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "resource-no-name.tf.json"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	actual := resourcesStr(c.Resources)
+	if actual != strings.TrimSpace(basicJsonNoNameResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
 func TestLoadFile_variables(t *testing.T) {
 	c, err := LoadFile(filepath.Join(fixtureDir, "variables.tf"))
 	if err != nil {
@@ -444,6 +513,58 @@ func TestLoadDir_override(t *testing.T) {
 	}
 }
 
+func TestLoadDir_overrideVar(t *testing.T) {
+	c, err := LoadDir(filepath.Join(fixtureDir, "dir-override-var"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	actual := variablesStr(c.Variables)
+	if actual != strings.TrimSpace(dirOverrideVarsVariablesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
+func TestLoadFile_mismatchedVariableTypes(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "variable-mismatched-type.tf"))
+	if err == nil {
+		t.Fatalf("bad: expected error")
+	}
+
+	errorStr := err.Error()
+	if !strings.Contains(errorStr, "'not_a_map' has a default value which is not of type 'string'") {
+		t.Fatalf("bad: expected error has wrong text: %s", errorStr)
+	}
+}
+
+func TestLoadFile_badVariableTypes(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "bad-variable-type.tf"))
+	if err == nil {
+		t.Fatalf("bad: expected error")
+	}
+
+	errorStr := err.Error()
+	if !strings.Contains(errorStr, "'bad_type' must be of type string") {
+		t.Fatalf("bad: expected error has wrong text: %s", errorStr)
+	}
+}
+
+func TestLoadFile_variableNoName(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "variable-no-name.tf"))
+	if err == nil {
+		t.Fatalf("bad: expected error")
+	}
+
+	errorStr := err.Error()
+	if !strings.Contains(errorStr, "'variable' must be followed") {
+		t.Fatalf("bad: expected error has wrong text: %s", errorStr)
+	}
+}
+
 func TestLoadFile_provisioners(t *testing.T) {
 	c, err := LoadFile(filepath.Join(fixtureDir, "provisioners.tf"))
 	if err != nil {
@@ -457,6 +578,18 @@ func TestLoadFile_provisioners(t *testing.T) {
 	actual := resourcesStr(c.Resources)
 	if actual != strings.TrimSpace(provisionerResourcesStr) {
 		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
+func TestLoadFile_unnamedOutput(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "output-unnamed.tf"))
+	if err == nil {
+		t.Fatalf("bad: expected error")
+	}
+
+	errorStr := err.Error()
+	if !strings.Contains(errorStr, "'output' must be followed") {
+		t.Fatalf("bad: expected error has wrong text: %s", errorStr)
 	}
 }
 
@@ -718,13 +851,13 @@ func TestLoad_jsonAttributes(t *testing.T) {
 }
 
 const jsonAttributeStr = `
-cloudstack_firewall[test] (x1)
+cloudstack_firewall.test (x1)
   ipaddress
   rule
 `
 
 const windowsHeredocResourcesStr = `
-aws_instance[test] (x1)
+aws_instance.test (x1)
   user_data
 `
 
@@ -735,28 +868,21 @@ aws
 `
 
 const heredocResourcesStr = `
-aws_iam_policy[policy] (x1)
+aws_iam_policy.policy (x1)
   description
   name
   path
   policy
-aws_instance[heredocwithnumbers] (x1)
+aws_instance.heredocwithnumbers (x1)
   ami
   provisioners
     local-exec
       command
-aws_instance[test] (x1)
+aws_instance.test (x1)
   ami
   provisioners
     remote-exec
       inline
-`
-
-const escapedquotesResourcesStr = `
-aws_instance[quotes] (x1)
-  ami
-  vars
-    user: var.ami
 `
 
 const basicOutputsStr = `
@@ -776,7 +902,7 @@ do
 `
 
 const basicResourcesStr = `
-aws_instance[db] (x1)
+aws_instance.db (x1)
   VPC
   security_groups
   provisioners
@@ -787,7 +913,7 @@ aws_instance[db] (x1)
     aws_instance.web
   vars
     resource: aws_security_group.firewall.*.id
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   network_interface
   security_groups
@@ -798,13 +924,29 @@ aws_instance[web] (x1)
   vars
     resource: aws_security_group.firewall.foo
     user: var.foo
-aws_security_group[firewall] (x5)
+aws_security_group.firewall (x5)
+data.do.depends (x1)
+  dependsOn
+    data.do.simple
+data.do.simple (x1)
+  foo
 `
 
 const basicVariablesStr = `
+bar (required) (string)
+  <>
+  <>
+baz (map)
+  map[key:value]
+  <>
 foo
   bar
   bar
+`
+
+const basicJsonNoNameResourcesStr = `
+aws_security_group.allow_external_http_https (x1)
+  tags
 `
 
 const dirBasicOutputsStr = `
@@ -824,18 +966,23 @@ do
 `
 
 const dirBasicResourcesStr = `
-aws_instance[db] (x1)
+aws_instance.db (x1)
   security_groups
   vars
     resource: aws_security_group.firewall.*.id
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   network_interface
   security_groups
   vars
     resource: aws_security_group.firewall.foo
     user: var.foo
-aws_security_group[firewall] (x5)
+aws_security_group.firewall (x5)
+data.do.depends (x1)
+  dependsOn
+    data.do.simple
+data.do.simple (x1)
+  foo
 `
 
 const dirBasicVariablesStr = `
@@ -861,10 +1008,10 @@ do
 `
 
 const dirOverrideResourcesStr = `
-aws_instance[db] (x1)
+aws_instance.db (x1)
   ami
   security_groups
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   foo
   network_interface
@@ -872,12 +1019,24 @@ aws_instance[web] (x1)
   vars
     resource: aws_security_group.firewall.foo
     user: var.foo
-aws_security_group[firewall] (x5)
+aws_security_group.firewall (x5)
+data.do.depends (x1)
+  hello
+  dependsOn
+    data.do.simple
+data.do.simple (x1)
+  foo
 `
 
 const dirOverrideVariablesStr = `
 foo
   bar
+  bar
+`
+
+const dirOverrideVarsVariablesStr = `
+foo
+  baz
   bar
 `
 
@@ -888,8 +1047,8 @@ aws
 `
 
 const importResourcesStr = `
-aws_security_group[db] (x1)
-aws_security_group[web] (x1)
+aws_security_group.db (x1)
+aws_security_group.web (x1)
 `
 
 const importVariablesStr = `
@@ -908,7 +1067,7 @@ bar
 `
 
 const provisionerResourcesStr = `
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   security_groups
   provisioners
@@ -920,7 +1079,7 @@ aws_instance[web] (x1)
 `
 
 const connectionResourcesStr = `
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   security_groups
   provisioners
@@ -946,17 +1105,17 @@ foo (required)
 `
 
 const createBeforeDestroyResourcesStr = `
-aws_instance[bar] (x1)
+aws_instance.bar (x1)
   ami
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
 `
 
 const ignoreChangesResourcesStr = `
-aws_instance[bar] (x1)
+aws_instance.bar (x1)
   ami
-aws_instance[baz] (x1)
+aws_instance.baz (x1)
   ami
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
 `

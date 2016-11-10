@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -83,6 +84,46 @@ func TestAccAWSLaunchConfiguration_withSpotPrice(t *testing.T) {
 					testAccCheckAWSLaunchConfigurationExists("aws_launch_configuration.bar", &conf),
 					resource.TestCheckResourceAttr(
 						"aws_launch_configuration.bar", "spot_price", "0.01"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSLaunchConfiguration_withVpcClassicLink(t *testing.T) {
+	var vpc ec2.Vpc
+	var group ec2.SecurityGroup
+	var conf autoscaling.LaunchConfiguration
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSLaunchConfigurationDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAWSLaunchConfigurationConfig_withVpcClassicLink,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSLaunchConfigurationExists("aws_launch_configuration.foo", &conf),
+					testAccCheckVpcExists("aws_vpc.foo", &vpc),
+					testAccCheckAWSSecurityGroupExists("aws_security_group.foo", &group),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSLaunchConfiguration_withIAMProfile(t *testing.T) {
+	var conf autoscaling.LaunchConfiguration
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSLaunchConfigurationDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAWSLaunchConfigurationConfig_withIAMProfile,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSLaunchConfigurationExists("aws_launch_configuration.bar", &conf),
 				),
 			},
 		},
@@ -335,5 +376,57 @@ resource "aws_launch_configuration" "baz" {
 		volume_size = 9
 		encrypted = true
 	}
+}
+`
+const testAccAWSLaunchConfigurationConfig_withVpcClassicLink = `
+resource "aws_vpc" "foo" {
+   cidr_block = "10.0.0.0/16"
+   enable_classiclink = true
+}
+
+resource "aws_security_group" "foo" {
+  name = "foo"
+  vpc_id = "${aws_vpc.foo.id}"
+}
+
+resource "aws_launch_configuration" "foo" {
+   name = "TestAccAWSLaunchConfiguration_withVpcClassicLink"
+   image_id = "ami-21f78e11"
+   instance_type = "t1.micro"
+
+   vpc_classic_link_id = "${aws_vpc.foo.id}"
+   vpc_classic_link_security_groups = ["${aws_security_group.foo.id}"]
+}
+`
+
+const testAccAWSLaunchConfigurationConfig_withIAMProfile = `
+resource "aws_iam_role" "role" {
+	name  = "TestAccAWSLaunchConfiguration-withIAMProfile"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_instance_profile" "profile" {
+	name  = "TestAccAWSLaunchConfiguration-withIAMProfile"
+	roles = ["${aws_iam_role.role.name}"]
+}
+
+resource "aws_launch_configuration" "bar" {
+	image_id             = "ami-5189a661"
+	instance_type        = "t2.nano"
+	iam_instance_profile = "${aws_iam_instance_profile.profile.name}"
 }
 `

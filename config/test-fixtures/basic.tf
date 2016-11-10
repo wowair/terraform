@@ -3,6 +3,18 @@ variable "foo" {
     description = "bar"
 }
 
+variable "bar" {
+    type = "string"
+}
+
+variable "baz" {
+    type = "map"
+
+    default = {
+        key = "value"
+    }
+}
+
 provider "aws" {
   access_key = "foo"
   secret_key = "bar"
@@ -10,6 +22,14 @@ provider "aws" {
 
 provider "do" {
   api_key = "${var.foo}"
+}
+
+data "do" "simple" {
+    foo = "baz"
+}
+
+data "do" "depends" {
+    depends_on = ["data.do.simple"]
 }
 
 resource "aws_security_group" "firewall" {

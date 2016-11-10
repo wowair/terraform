@@ -18,6 +18,9 @@ func resourceAwsVpnGateway() *schema.Resource {
 		Read:   resourceAwsVpnGatewayRead,
 		Update: resourceAwsVpnGatewayUpdate,
 		Delete: resourceAwsVpnGatewayDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"availability_zone": &schema.Schema{
@@ -29,6 +32,7 @@ func resourceAwsVpnGateway() *schema.Resource {
 			"vpc_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				Computed: true,
 			},
 
 			"tags": tagsSchema(),
@@ -77,19 +81,23 @@ func resourceAwsVpnGatewayRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	vpnGateway := resp.VpnGateways[0]
-	if vpnGateway == nil {
+	if vpnGateway == nil || *vpnGateway.State == "deleted" {
 		// Seems we have lost our VPN gateway
 		d.SetId("")
 		return nil
 	}
 
-	if len(vpnGateway.VpcAttachments) == 0 {
+	vpnAttachment := vpnGatewayGetAttachment(vpnGateway)
+	if len(vpnGateway.VpcAttachments) == 0 || *vpnAttachment.State == "detached" {
 		// Gateway exists but not attached to the VPC
 		d.Set("vpc_id", "")
 	} else {
-		d.Set("vpc_id", vpnGateway.VpcAttachments[0].VpcId)
+		d.Set("vpc_id", *vpnAttachment.VpcId)
 	}
-	d.Set("availability_zone", vpnGateway.AvailabilityZone)
+
+	if vpnGateway.AvailabilityZone != nil && *vpnGateway.AvailabilityZone != "" {
+		d.Set("availability_zone", vpnGateway.AvailabilityZone)
+	}
 	d.Set("tags", tagsToMap(vpnGateway.Tags))
 
 	return nil
@@ -129,7 +137,7 @@ func resourceAwsVpnGatewayDelete(d *schema.ResourceData, meta interface{}) error
 
 	log.Printf("[INFO] Deleting VPN gateway: %s", d.Id())
 
-	return resource.Retry(5*time.Minute, func() error {
+	return resource.Retry(5*time.Minute, func() *resource.RetryError {
 		_, err := conn.DeleteVpnGateway(&ec2.DeleteVpnGatewayInput{
 			VpnGatewayId: aws.String(d.Id()),
 		})
@@ -139,17 +147,17 @@ func resourceAwsVpnGatewayDelete(d *schema.ResourceData, meta interface{}) error
 
 		ec2err, ok := err.(awserr.Error)
 		if !ok {
-			return err
+			return resource.RetryableError(err)
 		}
 
 		switch ec2err.Code() {
 		case "InvalidVpnGatewayID.NotFound":
 			return nil
 		case "IncorrectState":
-			return err // retry
+			return resource.RetryableError(err)
 		}
 
-		return resource.RetryError{Err: err}
+		return resource.NonRetryableError(err)
 	})
 }
 
@@ -173,16 +181,16 @@ func resourceAwsVpnGatewayAttach(d *schema.ResourceData, meta interface{}) error
 		VpcId:        aws.String(d.Get("vpc_id").(string)),
 	}
 
-	err := resource.Retry(30*time.Second, func() error {
+	err := resource.Retry(30*time.Second, func() *resource.RetryError {
 		_, err := conn.AttachVpnGateway(req)
 		if err != nil {
 			if ec2err, ok := err.(awserr.Error); ok {
 				if "InvalidVpnGatewayID.NotFound" == ec2err.Code() {
-					//retry
-					return fmt.Errorf("Gateway not found, retry for eventual consistancy")
+					return resource.RetryableError(
+						fmt.Errorf("Gateway not found, retry for eventual consistancy"))
 				}
 			}
-			return resource.RetryError{Err: err}
+			return resource.NonRetryableError(err)
 		}
 		return nil
 	})
@@ -298,12 +306,21 @@ func vpnGatewayAttachStateRefreshFunc(conn *ec2.EC2, id string, expected string)
 		}
 
 		vpnGateway := resp.VpnGateways[0]
-
 		if len(vpnGateway.VpcAttachments) == 0 {
 			// No attachments, we're detached
 			return vpnGateway, "detached", nil
 		}
 
-		return vpnGateway, *vpnGateway.VpcAttachments[0].State, nil
+		vpnAttachment := vpnGatewayGetAttachment(vpnGateway)
+		return vpnGateway, *vpnAttachment.State, nil
 	}
+}
+
+func vpnGatewayGetAttachment(vgw *ec2.VpnGateway) *ec2.VpcAttachment {
+	for _, v := range vgw.VpcAttachments {
+		if *v.State == "attached" {
+			return v
+		}
+	}
+	return &ec2.VpcAttachment{State: aws.String("detached")}
 }

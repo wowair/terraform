@@ -29,6 +29,16 @@ func (w *MapFieldWriter) Map() map[string]string {
 	return w.result
 }
 
+func (w *MapFieldWriter) unsafeWriteField(addr string, value string) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if w.result == nil {
+		w.result = make(map[string]string)
+	}
+
+	w.result[addr] = value
+}
+
 func (w *MapFieldWriter) WriteField(addr []string, value interface{}) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
@@ -165,7 +175,7 @@ func (w *MapFieldWriter) setMap(
 	}
 
 	// Set the count
-	w.result[k+".#"] = strconv.Itoa(len(vs))
+	w.result[k+".%"] = strconv.Itoa(len(vs))
 
 	return nil
 }
@@ -277,7 +287,7 @@ func (w *MapFieldWriter) setSet(
 		// not the `value` directly is because this forces all types
 		// to become []interface{} (generic) instead of []string, which
 		// most hash functions are expecting.
-		s := &Set{F: schema.Set}
+		s := schema.ZeroValue().(*Set)
 		tempR := &MapFieldReader{
 			Map:    BasicMapReader(tempW.Map()),
 			Schema: tempSchemaMap,

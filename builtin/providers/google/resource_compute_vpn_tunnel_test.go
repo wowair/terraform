@@ -105,7 +105,7 @@ resource "google_compute_forwarding_rule" "foobar_udp500" {
 	name = "tunnel-test-%s"
 	region = "${google_compute_forwarding_rule.foobar_esp.region}"
 	ip_protocol = "UDP"
-	port_range = "500"
+	port_range = "500-500"
 	ip_address = "${google_compute_address.foobar.address}"
 	target = "${google_compute_vpn_gateway.foobar.self_link}"
 }
@@ -113,7 +113,7 @@ resource "google_compute_forwarding_rule" "foobar_udp4500" {
 	name = "tunnel-test-%s"
 	region = "${google_compute_forwarding_rule.foobar_udp500.region}"
 	ip_protocol = "UDP"
-	port_range = "4500"
+	port_range = "4500-4500"
 	ip_address = "${google_compute_address.foobar.address}"
 	target = "${google_compute_vpn_gateway.foobar.self_link}"
 }
@@ -122,7 +122,7 @@ resource "google_compute_vpn_tunnel" "foobar" {
 	region = "${google_compute_forwarding_rule.foobar_udp4500.region}"
 	target_vpn_gateway = "${google_compute_vpn_gateway.foobar.self_link}"
 	shared_secret = "unguessable"
-	peer_ip = "0.0.0.0"
+	peer_ip = "8.8.8.8"
 }`, acctest.RandString(10), acctest.RandString(10), acctest.RandString(10),
 	acctest.RandString(10), acctest.RandString(10), acctest.RandString(10),
 	acctest.RandString(10))

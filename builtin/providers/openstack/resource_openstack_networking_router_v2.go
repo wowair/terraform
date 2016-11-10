@@ -8,8 +8,8 @@ import (
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 
-	"github.com/rackspace/gophercloud"
-	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/layer3/routers"
+	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
 )
 
 func resourceNetworkingRouterV2() *schema.Resource {
@@ -24,7 +24,7 @@ func resourceNetworkingRouterV2() *schema.Resource {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				DefaultFunc: envDefaultFuncAllowMissing("OS_REGION_NAME"),
+				DefaultFunc: schema.EnvDefaultFunc("OS_REGION_NAME", ""),
 			},
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
@@ -35,6 +35,12 @@ func resourceNetworkingRouterV2() *schema.Resource {
 				Type:     schema.TypeBool,
 				Optional: true,
 				ForceNew: false,
+				Computed: true,
+			},
+			"distributed": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				ForceNew: true,
 				Computed: true,
 			},
 			"external_gateway": &schema.Schema{
@@ -48,6 +54,11 @@ func resourceNetworkingRouterV2() *schema.Resource {
 				ForceNew: true,
 				Computed: true,
 			},
+			"value_specs": &schema.Schema{
+				Type:     schema.TypeMap,
+				Optional: true,
+				ForceNew: true,
+			},
 		},
 	}
 }
@@ -59,14 +70,22 @@ func resourceNetworkingRouterV2Create(d *schema.ResourceData, meta interface{}) 
 		return fmt.Errorf("Error creating OpenStack networking client: %s", err)
 	}
 
-	createOpts := routers.CreateOpts{
-		Name:     d.Get("name").(string),
-		TenantID: d.Get("tenant_id").(string),
+	createOpts := RouterCreateOpts{
+		routers.CreateOpts{
+			Name:     d.Get("name").(string),
+			TenantID: d.Get("tenant_id").(string),
+		},
+		MapValueSpecs(d),
 	}
 
 	if asuRaw, ok := d.GetOk("admin_state_up"); ok {
 		asu := asuRaw.(bool)
 		createOpts.AdminStateUp = &asu
+	}
+
+	if dRaw, ok := d.GetOk("distributed"); ok {
+		d := dRaw.(bool)
+		createOpts.Distributed = &d
 	}
 
 	externalGateway := d.Get("external_gateway").(string)
@@ -89,7 +108,7 @@ func resourceNetworkingRouterV2Create(d *schema.ResourceData, meta interface{}) 
 		Pending:    []string{"BUILD", "PENDING_CREATE", "PENDING_UPDATE"},
 		Target:     []string{"ACTIVE"},
 		Refresh:    waitForRouterActive(networkingClient, n.ID),
-		Timeout:    2 * time.Minute,
+		Timeout:    10 * time.Minute,
 		Delay:      5 * time.Second,
 		MinTimeout: 3 * time.Second,
 	}
@@ -110,22 +129,19 @@ func resourceNetworkingRouterV2Read(d *schema.ResourceData, meta interface{}) er
 
 	n, err := routers.Get(networkingClient, d.Id()).Extract()
 	if err != nil {
-		httpError, ok := err.(*gophercloud.UnexpectedResponseCodeError)
-		if !ok {
-			return fmt.Errorf("Error retrieving OpenStack Neutron Router: %s", err)
-		}
-
-		if httpError.Actual == 404 {
+		if _, ok := err.(gophercloud.ErrDefault404); ok {
 			d.SetId("")
 			return nil
 		}
+
 		return fmt.Errorf("Error retrieving OpenStack Neutron Router: %s", err)
 	}
 
-	log.Printf("[DEBUG] Retreived Router %s: %+v", d.Id(), n)
+	log.Printf("[DEBUG] Retrieved Router %s: %+v", d.Id(), n)
 
 	d.Set("name", n.Name)
 	d.Set("admin_state_up", n.AdminStateUp)
+	d.Set("distributed", n.Distributed)
 	d.Set("tenant_id", n.TenantID)
 	d.Set("external_gateway", n.GatewayInfo.NetworkID)
 
@@ -133,6 +149,10 @@ func resourceNetworkingRouterV2Read(d *schema.ResourceData, meta interface{}) er
 }
 
 func resourceNetworkingRouterV2Update(d *schema.ResourceData, meta interface{}) error {
+	routerId := d.Id()
+	osMutexKV.Lock(routerId)
+	defer osMutexKV.Unlock(routerId)
+
 	config := meta.(*Config)
 	networkingClient, err := config.networkingV2Client(d.Get("region").(string))
 	if err != nil {
@@ -146,6 +166,15 @@ func resourceNetworkingRouterV2Update(d *schema.ResourceData, meta interface{}) 
 	if d.HasChange("admin_state_up") {
 		asu := d.Get("admin_state_up").(bool)
 		updateOpts.AdminStateUp = &asu
+	}
+	if d.HasChange("external_gateway") {
+		externalGateway := d.Get("external_gateway").(string)
+		if externalGateway != "" {
+			gatewayInfo := routers.GatewayInfo{
+				NetworkID: externalGateway,
+			}
+			updateOpts.GatewayInfo = &gatewayInfo
+		}
 	}
 
 	log.Printf("[DEBUG] Updating Router %s with options: %+v", d.Id(), updateOpts)
@@ -169,7 +198,7 @@ func resourceNetworkingRouterV2Delete(d *schema.ResourceData, meta interface{}) 
 		Pending:    []string{"ACTIVE"},
 		Target:     []string{"DELETED"},
 		Refresh:    waitForRouterDelete(networkingClient, d.Id()),
-		Timeout:    2 * time.Minute,
+		Timeout:    10 * time.Minute,
 		Delay:      5 * time.Second,
 		MinTimeout: 3 * time.Second,
 	}
@@ -201,26 +230,20 @@ func waitForRouterDelete(networkingClient *gophercloud.ServiceClient, routerId s
 
 		r, err := routers.Get(networkingClient, routerId).Extract()
 		if err != nil {
-			errCode, ok := err.(*gophercloud.UnexpectedResponseCodeError)
-			if !ok {
-				return r, "ACTIVE", err
-			}
-			if errCode.Actual == 404 {
+			if _, ok := err.(gophercloud.ErrDefault404); ok {
 				log.Printf("[DEBUG] Successfully deleted OpenStack Router %s", routerId)
 				return r, "DELETED", nil
 			}
+			return r, "ACTIVE", err
 		}
 
 		err = routers.Delete(networkingClient, routerId).ExtractErr()
 		if err != nil {
-			errCode, ok := err.(*gophercloud.UnexpectedResponseCodeError)
-			if !ok {
-				return r, "ACTIVE", err
-			}
-			if errCode.Actual == 404 {
+			if _, ok := err.(gophercloud.ErrDefault404); ok {
 				log.Printf("[DEBUG] Successfully deleted OpenStack Router %s", routerId)
 				return r, "DELETED", nil
 			}
+			return r, "ACTIVE", err
 		}
 
 		log.Printf("[DEBUG] OpenStack Router %s still active.\n", routerId)

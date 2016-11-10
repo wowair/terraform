@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/hashicorp/terraform/config/lang/ast"
+	"github.com/hashicorp/hil/ast"
 )
 
 func TestNewRawConfig(t *testing.T) {
@@ -27,7 +27,7 @@ func TestNewRawConfig(t *testing.T) {
 	}
 }
 
-func TestRawConfig(t *testing.T) {
+func TestRawConfig_basic(t *testing.T) {
 	raw := map[string]interface{}{
 		"foo": "${var.bar}",
 	}
@@ -191,7 +191,7 @@ func TestRawConfig_merge(t *testing.T) {
 			},
 			"var.baz": ast.Variable{
 				Value: UnknownVariableValue,
-				Type:  ast.TypeString,
+				Type:  ast.TypeUnknown,
 			},
 		}
 		if err := rc2.Interpolate(vars); err != nil {
@@ -216,6 +216,7 @@ func TestRawConfig_merge(t *testing.T) {
 	expected := map[string]interface{}{
 		"foo": "foovalue",
 		"bar": "barvalue",
+		"baz": UnknownVariableValue,
 	}
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("bad: %#v", actual)
@@ -250,7 +251,7 @@ func TestRawConfig_unknown(t *testing.T) {
 	vars := map[string]ast.Variable{
 		"var.bar": ast.Variable{
 			Value: UnknownVariableValue,
-			Type:  ast.TypeString,
+			Type:  ast.TypeUnknown,
 		},
 	}
 	if err := rc.Interpolate(vars); err != nil {
@@ -258,7 +259,7 @@ func TestRawConfig_unknown(t *testing.T) {
 	}
 
 	actual := rc.Config()
-	expected := map[string]interface{}{}
+	expected := map[string]interface{}{"foo": UnknownVariableValue}
 
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("bad: %#v", actual)
@@ -283,7 +284,7 @@ func TestRawConfig_unknownPartial(t *testing.T) {
 	vars := map[string]ast.Variable{
 		"var.bar": ast.Variable{
 			Value: UnknownVariableValue,
-			Type:  ast.TypeString,
+			Type:  ast.TypeUnknown,
 		},
 	}
 	if err := rc.Interpolate(vars); err != nil {
@@ -291,7 +292,42 @@ func TestRawConfig_unknownPartial(t *testing.T) {
 	}
 
 	actual := rc.Config()
-	expected := map[string]interface{}{}
+	expected := map[string]interface{}{"foo": UnknownVariableValue}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: %#v", actual)
+	}
+
+	expectedKeys := []string{"foo"}
+	if !reflect.DeepEqual(rc.UnknownKeys(), expectedKeys) {
+		t.Fatalf("bad: %#v", rc.UnknownKeys())
+	}
+}
+
+func TestRawConfig_unknownPartialList(t *testing.T) {
+	raw := map[string]interface{}{
+		"foo": []interface{}{
+			"${var.bar}/32",
+		},
+	}
+
+	rc, err := NewRawConfig(raw)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	vars := map[string]ast.Variable{
+		"var.bar": ast.Variable{
+			Value: UnknownVariableValue,
+			Type:  ast.TypeUnknown,
+		},
+	}
+	if err := rc.Interpolate(vars); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	actual := rc.Config()
+	expected := map[string]interface{}{"foo": []interface{}{UnknownVariableValue}}
 
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("bad: %#v", actual)
@@ -341,4 +377,28 @@ func TestRawConfigValue(t *testing.T) {
 func TestRawConfig_implGob(t *testing.T) {
 	var _ gob.GobDecoder = new(RawConfig)
 	var _ gob.GobEncoder = new(RawConfig)
+}
+
+// verify that RawMap returns a identical copy
+func TestNewRawConfig_rawMap(t *testing.T) {
+	raw := map[string]interface{}{
+		"foo": "${var.bar}",
+		"bar": `${file("boom.txt")}`,
+	}
+
+	rc, err := NewRawConfig(raw)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	rawCopy := rc.RawMap()
+	if !reflect.DeepEqual(raw, rawCopy) {
+		t.Fatalf("bad: %#v", rawCopy)
+	}
+
+	// make sure they aren't the same map
+	raw["test"] = "value"
+	if reflect.DeepEqual(raw, rawCopy) {
+		t.Fatal("RawMap() didn't return a copy")
+	}
 }

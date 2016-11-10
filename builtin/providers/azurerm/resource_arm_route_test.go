@@ -5,19 +5,23 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
 func TestAccAzureRMRoute_basic(t *testing.T) {
 
+	ri := acctest.RandInt()
+	config := fmt.Sprintf(testAccAzureRMRoute_basic, ri, ri, ri)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testCheckAzureRMRouteDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccAzureRMRoute_basic,
+			{
+				Config: config,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMRouteExists("azurerm_route.test"),
 				),
@@ -26,22 +30,48 @@ func TestAccAzureRMRoute_basic(t *testing.T) {
 	})
 }
 
-func TestAccAzureRMRoute_multipleRoutes(t *testing.T) {
+func TestAccAzureRMRoute_disappears(t *testing.T) {
+
+	ri := acctest.RandInt()
+	config := fmt.Sprintf(testAccAzureRMRoute_basic, ri, ri, ri)
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testCheckAzureRMRouteDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccAzureRMRoute_basic,
+			{
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					testCheckAzureRMRouteExists("azurerm_route.test"),
+					testCheckAzureRMRouteDisappears("azurerm_route.test"),
+				),
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
+func TestAccAzureRMRoute_multipleRoutes(t *testing.T) {
+
+	ri := acctest.RandInt()
+	preConfig := fmt.Sprintf(testAccAzureRMRoute_basic, ri, ri, ri)
+	postConfig := fmt.Sprintf(testAccAzureRMRoute_multipleRoutes, ri, ri, ri)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testCheckAzureRMRouteDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: preConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMRouteExists("azurerm_route.test"),
 				),
 			},
 
-			resource.TestStep{
-				Config: testAccAzureRMRoute_multipleRoutes,
+			{
+				Config: postConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMRouteExists("azurerm_route.test1"),
 				),
@@ -80,6 +110,32 @@ func testCheckAzureRMRouteExists(name string) resource.TestCheckFunc {
 	}
 }
 
+func testCheckAzureRMRouteDisappears(name string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+
+		rs, ok := s.RootModule().Resources[name]
+		if !ok {
+			return fmt.Errorf("Not found: %s", name)
+		}
+
+		name := rs.Primary.Attributes["name"]
+		rtName := rs.Primary.Attributes["route_table_name"]
+		resourceGroup, hasResourceGroup := rs.Primary.Attributes["resource_group_name"]
+		if !hasResourceGroup {
+			return fmt.Errorf("Bad: no resource group found in state for route: %s", name)
+		}
+
+		conn := testAccProvider.Meta().(*ArmClient).routesClient
+
+		_, err := conn.Delete(resourceGroup, rtName, name, make(chan struct{}))
+		if err != nil {
+			return fmt.Errorf("Bad: Delete on routesClient: %s", err)
+		}
+
+		return nil
+	}
+}
+
 func testCheckAzureRMRouteDestroy(s *terraform.State) error {
 	conn := testAccProvider.Meta().(*ArmClient).routesClient
 
@@ -108,18 +164,18 @@ func testCheckAzureRMRouteDestroy(s *terraform.State) error {
 
 var testAccAzureRMRoute_basic = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1"
+    name = "acctestRG-%d"
     location = "West US"
 }
 
 resource "azurerm_route_table" "test" {
-    name = "acceptanceTestRouteTable1"
+    name = "acctestrt%d"
     location = "West US"
     resource_group_name = "${azurerm_resource_group.test.name}"
 }
 
 resource "azurerm_route" "test" {
-    name = "acceptanceTestRoute1"
+    name = "acctestroute%d"
     resource_group_name = "${azurerm_resource_group.test.name}"
     route_table_name = "${azurerm_route_table.test.name}"
 
@@ -130,18 +186,18 @@ resource "azurerm_route" "test" {
 
 var testAccAzureRMRoute_multipleRoutes = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1"
+    name = "acctestRG-%d"
     location = "West US"
 }
 
 resource "azurerm_route_table" "test" {
-    name = "acceptanceTestRouteTable1"
+    name = "acctestrt%d"
     location = "West US"
     resource_group_name = "${azurerm_resource_group.test.name}"
 }
 
 resource "azurerm_route" "test1" {
-    name = "acceptanceTestRoute2"
+    name = "acctestroute%d"
     resource_group_name = "${azurerm_resource_group.test.name}"
     route_table_name = "${azurerm_route_table.test.name}"
 

@@ -7,13 +7,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/elasticache"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
 func TestAccAWSElasticacheSubnetGroup_basic(t *testing.T) {
 	var csg elasticache.CacheSubnetGroup
-	config := fmt.Sprintf(testAccAWSElasticacheSubnetGroupConfig, genRandInt())
+	config := fmt.Sprintf(testAccAWSElasticacheSubnetGroupConfig, acctest.RandInt())
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -24,6 +25,8 @@ func TestAccAWSElasticacheSubnetGroup_basic(t *testing.T) {
 				Config: config,
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSElasticacheSubnetGroupExists("aws_elasticache_subnet_group.bar", &csg),
+					resource.TestCheckResourceAttr(
+						"aws_elasticache_subnet_group.bar", "description", "Managed by Terraform"),
 				),
 			},
 		},
@@ -33,7 +36,7 @@ func TestAccAWSElasticacheSubnetGroup_basic(t *testing.T) {
 func TestAccAWSElasticacheSubnetGroup_update(t *testing.T) {
 	var csg elasticache.CacheSubnetGroup
 	rn := "aws_elasticache_subnet_group.bar"
-	ri := genRandInt()
+	ri := acctest.RandInt()
 	preConfig := fmt.Sprintf(testAccAWSElasticacheSubnetGroupUpdateConfigPre, ri)
 	postConfig := fmt.Sprintf(testAccAWSElasticacheSubnetGroupUpdateConfigPost, ri)
 
@@ -159,7 +162,6 @@ resource "aws_elasticache_subnet_group" "bar" {
     // that we correctly handle the fact that the API
     // normalizes names to lowercase.
     name = "tf-TEST-cache-subnet-%03d"
-    description = "tf-test-cache-subnet-group-descr"
     subnet_ids = ["${aws_subnet.foo.id}"]
 }
 `

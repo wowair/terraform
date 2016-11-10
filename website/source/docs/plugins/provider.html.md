@@ -102,7 +102,7 @@ an error if it is invalid. An example test is shown below:
 
 ```
 func TestProvider(t *testing.T) {
-	if err := Provider().InternalValidate(); err != nil {
+	if err := Provider().(*schema.Provider).InternalValidate(); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 }
@@ -137,6 +137,10 @@ structure. This structure has the following fields:
       functions that implement CRUD operations for the resource. The only
       optional field is `Update`. If your resource doesn't support update, then
       you may keep that field nil.
+
+  * `Importer` - If this is non-nil, then this resource is
+    [importable](/docs/import/importability.html). It is recommended to
+    implement this.
 
 The CRUD operations in more detail, along with their contracts:
 

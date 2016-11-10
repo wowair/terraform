@@ -1,7 +1,9 @@
 package terraform
 
 import (
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/hashicorp/terraform/config/module"
 )
@@ -21,18 +23,41 @@ type GraphBuilder interface {
 type BasicGraphBuilder struct {
 	Steps    []GraphTransformer
 	Validate bool
+	// Optional name to add to the graph debug log
+	Name string
 }
 
 func (b *BasicGraphBuilder) Build(path []string) (*Graph, error) {
 	g := &Graph{Path: path}
 	for _, step := range b.Steps {
-		if err := step.Transform(g); err != nil {
-			return g, err
+		if step == nil {
+			continue
+		}
+
+		stepName := fmt.Sprintf("%T", step)
+		dot := strings.LastIndex(stepName, ".")
+		if dot >= 0 {
+			stepName = stepName[dot+1:]
+		}
+
+		err := step.Transform(g)
+
+		// always log the graph state to see what transformations may have happened
+		debugName := "build-" + stepName
+		if b.Name != "" {
+			debugName = b.Name + "-" + debugName
 		}
 
 		log.Printf(
 			"[TRACE] Graph after step %T:\n\n%s",
-			step, g.String())
+			step, g.StringWithNodeTypes())
+
+		dg, _ := NewDebugGraph(debugName, g, nil)
+		dbug.WriteGraph(dg)
+
+		if err != nil {
+			return g, err
+		}
 	}
 
 	// Validate the graph structure
@@ -93,6 +118,7 @@ func (b *BuiltinGraphBuilder) Build(path []string) (*Graph, error) {
 	basic := &BasicGraphBuilder{
 		Steps:    b.Steps(path),
 		Validate: b.Validate,
+		Name:     "builtin",
 	}
 
 	return basic.Build(path)
@@ -103,7 +129,7 @@ func (b *BuiltinGraphBuilder) Build(path []string) (*Graph, error) {
 func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 	steps := []GraphTransformer{
 		// Create all our resources from the configuration and state
-		&ConfigTransformer{Module: b.Root},
+		&ConfigTransformerOld{Module: b.Root},
 		&OrphanTransformer{
 			State:  b.State,
 			Module: b.Root,
@@ -115,7 +141,7 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 		// Provider-related transformations
 		&MissingProviderTransformer{Providers: b.Providers},
 		&ProviderTransformer{},
-		&DisableProviderTransformer{},
+		&DisableProviderTransformerOld{},
 
 		// Provisioner-related transformations
 		&MissingProvisionerTransformer{Provisioners: b.Provisioners},
@@ -136,9 +162,6 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 
 		// Make sure all the connections that are proxies are connected through
 		&ProxyTransformer{},
-
-		// Make sure we have a single root
-		&RootTransformer{},
 	}
 
 	// If we're on the root path, then we do a bunch of other stuff.
@@ -149,15 +172,19 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 			// their dependencies.
 			&TargetsTransformer{Targets: b.Targets, Destroy: b.Destroy},
 
-			// Prune the providers and provisioners. This must happen
-			// only once because flattened modules might depend on empty
-			// providers.
+			// Create orphan output nodes
+			&OrphanOutputTransformer{Module: b.Root, State: b.State},
+
+			// Prune the providers. This must happen only once because flattened
+			// modules might depend on empty providers.
 			&PruneProviderTransformer{},
-			&PruneProvisionerTransformer{},
 
 			// Create the destruction nodes
 			&DestroyTransformer{FullDestroy: b.Destroy},
-			&CreateBeforeDestroyTransformer{},
+			b.conditional(&conditionalOpts{
+				If:   func() bool { return !b.Destroy },
+				Then: &CreateBeforeDestroyTransformer{},
+			}),
 			b.conditional(&conditionalOpts{
 				If:   func() bool { return !b.Verbose },
 				Then: &PruneDestroyTransformer{Diff: b.Diff, State: b.State},
@@ -170,16 +197,14 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 			&CloseProviderTransformer{},
 			&CloseProvisionerTransformer{},
 
-			// Make sure we have a single root after the above changes.
-			// This is the 2nd root transformer. In practice this shouldn't
-			// actually matter as the RootTransformer is idempotent.
-			&RootTransformer{},
-
 			// Perform the transitive reduction to make our graph a bit
 			// more sane if possible (it usually is possible).
 			&TransitiveReductionTransformer{},
 		)
 	}
+
+	// Make sure we have a single root
+	steps = append(steps, &RootTransformer{})
 
 	// Remove nils
 	for i, s := range steps {

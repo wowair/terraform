@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 
@@ -34,6 +35,9 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 		Read:   resourceAwsDynamoDbTableRead,
 		Update: resourceAwsDynamoDbTableUpdate,
 		Delete: resourceAwsDynamoDbTableDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"arn": &schema.Schema{
@@ -48,10 +52,12 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 			"hash_key": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+				ForceNew: true,
 			},
 			"range_key": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				ForceNew: true,
 			},
 			"write_capacity": &schema.Schema{
 				Type:     schema.TypeInt,
@@ -86,6 +92,7 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 			"local_secondary_index": &schema.Schema{
 				Type:     schema.TypeSet,
 				Optional: true,
+				ForceNew: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"name": &schema.Schema{
@@ -174,6 +181,10 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 					return strings.ToUpper(value)
 				},
 				ValidateFunc: validateStreamViewType,
+			},
+			"stream_arn": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
 			},
 		},
 	}
@@ -332,19 +343,8 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 	dynamodbconn := meta.(*AWSClient).dynamodbconn
 
 	// Ensure table is active before trying to update
-	waitForTableToBeActive(d.Id(), meta)
-
-	// LSI can only be done at create-time, abort if it's been changed
-	if d.HasChange("local_secondary_index") {
-		return fmt.Errorf("Local secondary indexes can only be built at creation, you cannot update them!")
-	}
-
-	if d.HasChange("hash_key") {
-		return fmt.Errorf("Hash key can only be specified at creation, you cannot modify it.")
-	}
-
-	if d.HasChange("range_key") {
-		return fmt.Errorf("Range key can only be specified at creation, you cannot modify it.")
+	if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+		return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
 	}
 
 	if d.HasChange("read_capacity") || d.HasChange("write_capacity") {
@@ -364,7 +364,9 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 			return err
 		}
 
-		waitForTableToBeActive(d.Id(), meta)
+		if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+			return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+		}
 	}
 
 	if d.HasChange("stream_enabled") || d.HasChange("stream_view_type") {
@@ -383,7 +385,9 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 			return err
 		}
 
-		waitForTableToBeActive(d.Id(), meta)
+		if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+			return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+		}
 	}
 
 	if d.HasChange("global_secondary_index") {
@@ -465,8 +469,13 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 					return err
 				}
 
-				waitForTableToBeActive(d.Id(), meta)
-				waitForGSIToBeActive(d.Id(), *gsi.IndexName, meta)
+				if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+					return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+				}
+
+				if err := waitForGSIToBeActive(d.Id(), *gsi.IndexName, meta); err != nil {
+					return errwrap.Wrapf("Error waiting for Dynamo DB GSIT to be active: {{err}}", err)
+				}
 
 			}
 		}
@@ -491,7 +500,9 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 					return err
 				}
 
-				waitForTableToBeActive(d.Id(), meta)
+				if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+					return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+				}
 			}
 		}
 	}
@@ -583,6 +594,11 @@ func resourceAwsDynamoDbTableRead(d *schema.ResourceData, meta interface{}) erro
 	result, err := dynamodbconn.DescribeTable(req)
 
 	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == "ResourceNotFoundException" {
+			log.Printf("[WARN] Dynamodb Table (%s) not found, error code (404)", d.Id())
+			d.SetId("")
+			return nil
+		}
 		return err
 	}
 
@@ -602,6 +618,44 @@ func resourceAwsDynamoDbTableRead(d *schema.ResourceData, meta interface{}) erro
 	}
 
 	d.Set("attribute", attributes)
+	d.Set("name", table.TableName)
+
+	for _, attribute := range table.KeySchema {
+		if *attribute.KeyType == "HASH" {
+			d.Set("hash_key", attribute.AttributeName)
+		}
+
+		if *attribute.KeyType == "RANGE" {
+			d.Set("range_key", attribute.AttributeName)
+		}
+	}
+
+	lsiList := make([]map[string]interface{}, 0, len(table.LocalSecondaryIndexes))
+	for _, lsiObject := range table.LocalSecondaryIndexes {
+		lsi := map[string]interface{}{
+			"name":            *lsiObject.IndexName,
+			"projection_type": *lsiObject.Projection.ProjectionType,
+		}
+
+		for _, attribute := range lsiObject.KeySchema {
+
+			if *attribute.KeyType == "RANGE" {
+				lsi["range_key"] = *attribute.AttributeName
+			}
+		}
+		nkaList := make([]string, len(lsiObject.Projection.NonKeyAttributes))
+		for _, nka := range lsiObject.Projection.NonKeyAttributes {
+			nkaList = append(nkaList, *nka)
+		}
+		lsi["non_key_attributes"] = nkaList
+
+		lsiList = append(lsiList, lsi)
+	}
+
+	err = d.Set("local_secondary_index", lsiList)
+	if err != nil {
+		return err
+	}
 
 	gsiList := make([]map[string]interface{}, 0, len(table.GlobalSecondaryIndexes))
 	for _, gsiObject := range table.GlobalSecondaryIndexes {
@@ -636,6 +690,7 @@ func resourceAwsDynamoDbTableRead(d *schema.ResourceData, meta interface{}) erro
 	if table.StreamSpecification != nil {
 		d.Set("stream_view_type", table.StreamSpecification.StreamViewType)
 		d.Set("stream_enabled", table.StreamSpecification.StreamEnabled)
+		d.Set("stream_arn", table.LatestStreamArn)
 	}
 
 	err = d.Set("global_secondary_index", gsiList)
@@ -651,7 +706,9 @@ func resourceAwsDynamoDbTableRead(d *schema.ResourceData, meta interface{}) erro
 func resourceAwsDynamoDbTableDelete(d *schema.ResourceData, meta interface{}) error {
 	dynamodbconn := meta.(*AWSClient).dynamodbconn
 
-	waitForTableToBeActive(d.Id(), meta)
+	if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+		return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+	}
 
 	log.Printf("[DEBUG] DynamoDB delete table: %s", d.Id())
 
@@ -666,25 +723,25 @@ func resourceAwsDynamoDbTableDelete(d *schema.ResourceData, meta interface{}) er
 		TableName: aws.String(d.Id()),
 	}
 
-	err = resource.Retry(10*time.Minute, func() error {
+	err = resource.Retry(10*time.Minute, func() *resource.RetryError {
 		t, err := dynamodbconn.DescribeTable(params)
 		if err != nil {
 			if awserr, ok := err.(awserr.Error); ok && awserr.Code() == "ResourceNotFoundException" {
 				return nil
 			}
 			// Didn't recognize the error, so shouldn't retry.
-			return resource.RetryError{Err: err}
+			return resource.NonRetryableError(err)
 		}
 
 		if t != nil {
 			if t.Table.TableStatus != nil && strings.ToLower(*t.Table.TableStatus) == "deleting" {
 				log.Printf("[DEBUG] AWS Dynamo DB table (%s) is still deleting", d.Id())
-				return fmt.Errorf("still deleting")
+				return resource.RetryableError(fmt.Errorf("still deleting"))
 			}
 		}
 
 		// we should be not found or deleting, so error here
-		return resource.RetryError{Err: fmt.Errorf("[ERR] Error deleting Dynamo DB table, unexpected state: %s", t)}
+		return resource.NonRetryableError(err)
 	})
 
 	// check error from retry

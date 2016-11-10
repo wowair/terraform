@@ -16,13 +16,13 @@ func resourceCloudStackVPNConnection() *schema.Resource {
 		Delete: resourceCloudStackVPNConnectionDelete,
 
 		Schema: map[string]*schema.Schema{
-			"customergatewayid": &schema.Schema{
+			"customer_gateway_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"vpngatewayid": &schema.Schema{
+			"vpn_gateway_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
@@ -36,8 +36,8 @@ func resourceCloudStackVPNConnectionCreate(d *schema.ResourceData, meta interfac
 
 	// Create a new parameter struct
 	p := cs.VPN.NewCreateVpnConnectionParams(
-		d.Get("customergatewayid").(string),
-		d.Get("vpngatewayid").(string),
+		d.Get("customer_gateway_id").(string),
+		d.Get("vpn_gateway_id").(string),
 	)
 
 	// Create the new VPN Connection
@@ -66,8 +66,8 @@ func resourceCloudStackVPNConnectionRead(d *schema.ResourceData, meta interface{
 		return err
 	}
 
-	d.Set("customergatewayid", v.S2scustomergatewayid)
-	d.Set("vpngatewayid", v.S2svpngatewayid)
+	d.Set("customer_gateway_id", v.S2scustomergatewayid)
+	d.Set("vpn_gateway_id", v.S2svpngatewayid)
 
 	return nil
 }

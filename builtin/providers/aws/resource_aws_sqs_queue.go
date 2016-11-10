@@ -3,11 +3,15 @@ package aws
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"strconv"
 
 	"github.com/hashicorp/terraform/helper/schema"
 
+	"strings"
+
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
@@ -31,47 +35,58 @@ func resourceAwsSqsQueue() *schema.Resource {
 		Read:   resourceAwsSqsQueueRead,
 		Update: resourceAwsSqsQueueUpdate,
 		Delete: resourceAwsSqsQueueDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"delay_seconds": &schema.Schema{
+			"delay_seconds": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Computed: true,
+				Default:  0,
 			},
-			"max_message_size": &schema.Schema{
+			"max_message_size": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Computed: true,
+				Default:  262144,
 			},
-			"message_retention_seconds": &schema.Schema{
+			"message_retention_seconds": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Computed: true,
+				Default:  345600,
 			},
-			"receive_wait_time_seconds": &schema.Schema{
+			"receive_wait_time_seconds": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Computed: true,
+				Default:  0,
 			},
-			"visibility_timeout_seconds": &schema.Schema{
+			"visibility_timeout_seconds": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Computed: true,
+				Default:  30,
 			},
-			"policy": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
+			"policy": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateFunc:     validateJsonString,
+				DiffSuppressFunc: suppressEquivalentAwsPolicyDiffs,
 			},
-			"redrive_policy": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
+			"redrive_policy": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validateJsonString,
+				StateFunc: func(v interface{}) string {
+					json, _ := normalizeJsonString(v)
+					return json
+				},
 			},
-			"arn": &schema.Schema{
+			"arn": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
@@ -146,7 +161,9 @@ func resourceAwsSqsQueueUpdate(d *schema.ResourceData, meta interface{}) error {
 			QueueUrl:   aws.String(d.Id()),
 			Attributes: attributes,
 		}
-		sqsconn.SetQueueAttributes(req)
+		if _, err := sqsconn.SetQueueAttributes(req); err != nil {
+			return fmt.Errorf("[ERR] Error updating SQS attributes: %s", err)
+		}
 	}
 
 	return resourceAwsSqsQueueRead(d, meta)
@@ -161,8 +178,22 @@ func resourceAwsSqsQueueRead(d *schema.ResourceData, meta interface{}) error {
 	})
 
 	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok {
+			log.Printf("ERROR Found %s", awsErr.Code())
+			if "AWS.SimpleQueueService.NonExistentQueue" == awsErr.Code() {
+				d.SetId("")
+				log.Printf("[DEBUG] SQS Queue (%s) not found", d.Get("name").(string))
+				return nil
+			}
+		}
 		return err
 	}
+
+	name, err := extractNameFromSqsQueueUrl(d.Id())
+	if err != nil {
+		return err
+	}
+	d.Set("name", name)
 
 	if attributeOutput.Attributes != nil && len(attributeOutput.Attributes) > 0 {
 		attrmap := attributeOutput.Attributes
@@ -176,7 +207,9 @@ func resourceAwsSqsQueueRead(d *schema.ResourceData, meta interface{}) error {
 						return err
 					}
 					d.Set(iKey, value)
+					log.Printf("[DEBUG] Reading %s => %s -> %d", iKey, oKey, value)
 				} else {
+					log.Printf("[DEBUG] Reading %s => %s -> %s", iKey, oKey, *attrmap[oKey])
 					d.Set(iKey, *attrmap[oKey])
 				}
 			}
@@ -197,4 +230,19 @@ func resourceAwsSqsQueueDelete(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 	return nil
+}
+
+func extractNameFromSqsQueueUrl(queue string) (string, error) {
+	//http://sqs.us-west-2.amazonaws.com/123456789012/queueName
+	u, err := url.Parse(queue)
+	if err != nil {
+		return "", err
+	}
+	segments := strings.Split(u.Path, "/")
+	if len(segments) != 3 {
+		return "", fmt.Errorf("SQS Url not parsed correctly")
+	}
+
+	return segments[2], nil
+
 }

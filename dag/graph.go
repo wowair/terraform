@@ -48,6 +48,32 @@ func (g *Graph) Edges() []Edge {
 	return result
 }
 
+// EdgesFrom returns the list of edges from the given source.
+func (g *Graph) EdgesFrom(v Vertex) []Edge {
+	var result []Edge
+	from := hashcode(v)
+	for _, e := range g.Edges() {
+		if hashcode(e.Source()) == from {
+			result = append(result, e)
+		}
+	}
+
+	return result
+}
+
+// EdgesTo returns the list of edges to the given target.
+func (g *Graph) EdgesTo(v Vertex) []Edge {
+	var result []Edge
+	search := hashcode(v)
+	for _, e := range g.Edges() {
+		if hashcode(e.Target()) == search {
+			result = append(result, e)
+		}
+	}
+
+	return result
+}
+
 // HasVertex checks if the given Vertex is present in the graph.
 func (g *Graph) HasVertex(v Vertex) bool {
 	return g.vertices.Include(v)
@@ -175,6 +201,48 @@ func (g *Graph) Connect(edge Edge) {
 		g.upEdges[targetCode] = s
 	}
 	s.Add(source)
+}
+
+// String outputs some human-friendly output for the graph structure.
+func (g *Graph) StringWithNodeTypes() string {
+	var buf bytes.Buffer
+
+	// Build the list of node names and a mapping so that we can more
+	// easily alphabetize the output to remain deterministic.
+	vertices := g.Vertices()
+	names := make([]string, 0, len(vertices))
+	mapping := make(map[string]Vertex, len(vertices))
+	for _, v := range vertices {
+		name := VertexName(v)
+		names = append(names, name)
+		mapping[name] = v
+	}
+	sort.Strings(names)
+
+	// Write each node in order...
+	for _, name := range names {
+		v := mapping[name]
+		targets := g.downEdges[hashcode(v)]
+
+		buf.WriteString(fmt.Sprintf("%s - %T\n", name, v))
+
+		// Alphabetize dependencies
+		deps := make([]string, 0, targets.Len())
+		targetNodes := make(map[string]Vertex)
+		for _, target := range targets.List() {
+			dep := VertexName(target)
+			deps = append(deps, dep)
+			targetNodes[dep] = target
+		}
+		sort.Strings(deps)
+
+		// Write dependencies
+		for _, d := range deps {
+			buf.WriteString(fmt.Sprintf("  %s - %T\n", d, targetNodes[d]))
+		}
+	}
+
+	return buf.String()
 }
 
 // String outputs some human-friendly output for the graph structure.

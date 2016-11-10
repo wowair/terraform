@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,6 +16,9 @@ func resourceAwsCloudWatchMetricAlarm() *schema.Resource {
 		Read:   resourceAwsCloudWatchMetricAlarmRead,
 		Update: resourceAwsCloudWatchMetricAlarmUpdate,
 		Delete: resourceAwsCloudWatchMetricAlarmDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"alarm_name": &schema.Schema{
@@ -61,9 +63,7 @@ func resourceAwsCloudWatchMetricAlarm() *schema.Resource {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				Set:      schema.HashString,
 			},
 			"alarm_description": &schema.Schema{
 				Type:     schema.TypeString,
@@ -77,17 +77,13 @@ func resourceAwsCloudWatchMetricAlarm() *schema.Resource {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				Set:      schema.HashString,
 			},
 			"ok_actions": &schema.Schema{
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				Set:      schema.HashString,
 			},
 			"unit": &schema.Schema{
 				Type:     schema.TypeString,
@@ -133,7 +129,9 @@ func resourceAwsCloudWatchMetricAlarmRead(d *schema.ResourceData, meta interface
 	d.Set("alarm_description", a.AlarmDescription)
 	d.Set("alarm_name", a.AlarmName)
 	d.Set("comparison_operator", a.ComparisonOperator)
-	d.Set("dimensions", a.Dimensions)
+	if err := d.Set("dimensions", flattenDimensions(a.Dimensions)); err != nil {
+		return err
+	}
 	d.Set("evaluation_periods", a.EvaluationPeriods)
 
 	if err := d.Set("insufficient_data_actions", _strArrPtrToList(a.InsufficientDataActions)); err != nil {
@@ -266,7 +264,7 @@ func getAwsCloudWatchMetricAlarm(d *schema.ResourceData, meta interface{}) (*clo
 
 	resp, err := conn.DescribeAlarms(&params)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 
 	// Find it and return it
@@ -285,4 +283,12 @@ func _strArrPtrToList(strArrPtr []*string) []string {
 		result = append(result, *elem)
 	}
 	return result
+}
+
+func flattenDimensions(dims []*cloudwatch.Dimension) map[string]interface{} {
+	flatDims := make(map[string]interface{})
+	for _, d := range dims {
+		flatDims[*d.Name] = *d.Value
+	}
+	return flatDims
 }

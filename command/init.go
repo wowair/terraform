@@ -25,11 +25,13 @@ func (c *InitCommand) Run(args []string) int {
 	remoteConfig := make(map[string]string)
 	cmdFlags := flag.NewFlagSet("init", flag.ContinueOnError)
 	cmdFlags.StringVar(&remoteBackend, "backend", "", "")
-	cmdFlags.Var((*FlagKV)(&remoteConfig), "backend-config", "config")
+	cmdFlags.Var((*FlagStringKV)(&remoteConfig), "backend-config", "config")
 	cmdFlags.Usage = func() { c.Ui.Error(c.Help()) }
 	if err := cmdFlags.Parse(args); err != nil {
 		return 1
 	}
+
+	remoteBackend = strings.ToLower(remoteBackend)
 
 	var path string
 	args = cmdFlags.Args()
@@ -56,7 +58,7 @@ func (c *InitCommand) Run(args []string) int {
 	// Set the state out path to be the path requested for the module
 	// to be copied. This ensures any remote states gets setup in the
 	// proper directory.
-	c.Meta.dataDir = filepath.Join(path, DefaultDataDirectory)
+	c.Meta.dataDir = filepath.Join(path, DefaultDataDir)
 
 	source := args[0]
 
@@ -129,7 +131,7 @@ func (c *InitCommand) Run(args []string) int {
 		// Initialize a blank state file with remote enabled
 		remoteCmd := &RemoteConfigCommand{
 			Meta:       c.Meta,
-			remoteConf: remoteConf,
+			remoteConf: &remoteConf,
 		}
 		return remoteCmd.initBlankState()
 	}

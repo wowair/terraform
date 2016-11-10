@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 
@@ -20,7 +21,7 @@ import (
 
 func TestAccGoogleSqlDatabaseInstance_basic(t *testing.T) {
 	var instance sqladmin.DatabaseInstance
-	databaseID := genRandInt()
+	databaseID := acctest.RandInt()
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -64,7 +65,7 @@ func TestAccGoogleSqlDatabaseInstance_basic2(t *testing.T) {
 
 func TestAccGoogleSqlDatabaseInstance_settings_basic(t *testing.T) {
 	var instance sqladmin.DatabaseInstance
-	databaseID := genRandInt()
+	databaseID := acctest.RandInt()
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -87,7 +88,7 @@ func TestAccGoogleSqlDatabaseInstance_settings_basic(t *testing.T) {
 
 func TestAccGoogleSqlDatabaseInstance_settings_upgrade(t *testing.T) {
 	var instance sqladmin.DatabaseInstance
-	databaseID := genRandInt()
+	databaseID := acctest.RandInt()
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -120,7 +121,7 @@ func TestAccGoogleSqlDatabaseInstance_settings_upgrade(t *testing.T) {
 
 func TestAccGoogleSqlDatabaseInstance_settings_downgrade(t *testing.T) {
 	var instance sqladmin.DatabaseInstance
-	databaseID := genRandInt()
+	databaseID := acctest.RandInt()
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -146,6 +147,32 @@ func TestAccGoogleSqlDatabaseInstance_settings_downgrade(t *testing.T) {
 					testAccCheckGoogleSqlDatabaseInstanceEquals(
 						"google_sql_database_instance.instance", &instance),
 				),
+			},
+		},
+	})
+}
+
+// GH-4222
+func TestAccGoogleSqlDatabaseInstance_authNets(t *testing.T) {
+	// var instance sqladmin.DatabaseInstance
+	databaseID := acctest.RandInt()
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccGoogleSqlDatabaseInstanceDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: fmt.Sprintf(
+					testGoogleSqlDatabaseInstance_authNets_step1, databaseID),
+			},
+			resource.TestStep{
+				Config: fmt.Sprintf(
+					testGoogleSqlDatabaseInstance_authNets_step2, databaseID),
+			},
+			resource.TestStep{
+				Config: fmt.Sprintf(
+					testGoogleSqlDatabaseInstance_authNets_step1, databaseID),
 			},
 		},
 	})
@@ -443,6 +470,41 @@ resource "google_sql_database_instance" "instance" {
 		username = "username"
 		ssl_cipher = "ALL"
 		verify_server_certificate = false
+	}
+}
+`
+
+var testGoogleSqlDatabaseInstance_authNets_step1 = `
+resource "google_sql_database_instance" "instance" {
+	name = "tf-lw-%d"
+	region = "us-central"
+	settings {
+		tier = "D0"
+		crash_safe_replication = false
+
+		ip_configuration {
+			ipv4_enabled = "true"
+			authorized_networks {
+				value = "108.12.12.12"
+				name = "misc"
+				expiration_time = "2017-11-15T16:19:00.094Z"
+			}
+		}
+	}
+}
+`
+
+var testGoogleSqlDatabaseInstance_authNets_step2 = `
+resource "google_sql_database_instance" "instance" {
+	name = "tf-lw-%d"
+	region = "us-central"
+	settings {
+		tier = "D0"
+		crash_safe_replication = false
+
+		ip_configuration {
+			ipv4_enabled = "true"
+		}
 	}
 }
 `

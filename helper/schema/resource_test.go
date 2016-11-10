@@ -162,7 +162,7 @@ func TestResourceApply_destroyCreate(t *testing.T) {
 		Attributes: map[string]string{
 			"id":        "foo",
 			"foo":       "42",
-			"tags.#":    "1",
+			"tags.%":    "1",
 			"tags.Name": "foo",
 		},
 	}
@@ -312,13 +312,96 @@ func TestResourceApply_updateNoCallback(t *testing.T) {
 	}
 }
 
+func TestResourceApply_isNewResource(t *testing.T) {
+	r := &Resource{
+		Schema: map[string]*Schema{
+			"foo": &Schema{
+				Type:     TypeString,
+				Optional: true,
+			},
+		},
+	}
+
+	updateFunc := func(d *ResourceData, m interface{}) error {
+		d.Set("foo", "updated")
+		if d.IsNewResource() {
+			d.Set("foo", "new-resource")
+		}
+		return nil
+	}
+	r.Create = func(d *ResourceData, m interface{}) error {
+		d.SetId("foo")
+		d.Set("foo", "created")
+		return updateFunc(d, m)
+	}
+	r.Update = updateFunc
+
+	d := &terraform.InstanceDiff{
+		Attributes: map[string]*terraform.ResourceAttrDiff{
+			"foo": &terraform.ResourceAttrDiff{
+				New: "bla-blah",
+			},
+		},
+	}
+
+	// positive test
+	var s *terraform.InstanceState = nil
+
+	actual, err := r.Apply(s, d, nil)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	expected := &terraform.InstanceState{
+		ID: "foo",
+		Attributes: map[string]string{
+			"id":  "foo",
+			"foo": "new-resource",
+		},
+	}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("actual: %#v\nexpected: %#v",
+			actual, expected)
+	}
+
+	// negative test
+	s = &terraform.InstanceState{
+		ID: "foo",
+		Attributes: map[string]string{
+			"id":  "foo",
+			"foo": "new-resource",
+		},
+	}
+
+	actual, err = r.Apply(s, d, nil)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	expected = &terraform.InstanceState{
+		ID: "foo",
+		Attributes: map[string]string{
+			"id":  "foo",
+			"foo": "updated",
+		},
+	}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("actual: %#v\nexpected: %#v",
+			actual, expected)
+	}
+}
+
 func TestResourceInternalValidate(t *testing.T) {
 	cases := []struct {
-		In  *Resource
-		Err bool
+		In       *Resource
+		Writable bool
+		Err      bool
 	}{
 		{
 			nil,
+			true,
 			true,
 		},
 
@@ -334,6 +417,7 @@ func TestResourceInternalValidate(t *testing.T) {
 				},
 			},
 			true,
+			true,
 		},
 
 		// Update undefined for non-ForceNew field
@@ -347,6 +431,7 @@ func TestResourceInternalValidate(t *testing.T) {
 					},
 				},
 			},
+			true,
 			true,
 		},
 
@@ -364,14 +449,80 @@ func TestResourceInternalValidate(t *testing.T) {
 				},
 			},
 			true,
+			true,
+		},
+
+		// non-writable doesn't need Update, Create or Delete
+		{
+			&Resource{
+				Schema: map[string]*Schema{
+					"goo": &Schema{
+						Type:     TypeInt,
+						Optional: true,
+					},
+				},
+			},
+			false,
+			false,
+		},
+
+		// non-writable *must not* have Create
+		{
+			&Resource{
+				Create: func(d *ResourceData, meta interface{}) error { return nil },
+				Schema: map[string]*Schema{
+					"goo": &Schema{
+						Type:     TypeInt,
+						Optional: true,
+					},
+				},
+			},
+			false,
+			true,
+		},
+
+		// writable must have Read
+		{
+			&Resource{
+				Create: func(d *ResourceData, meta interface{}) error { return nil },
+				Update: func(d *ResourceData, meta interface{}) error { return nil },
+				Delete: func(d *ResourceData, meta interface{}) error { return nil },
+				Schema: map[string]*Schema{
+					"goo": &Schema{
+						Type:     TypeInt,
+						Optional: true,
+					},
+				},
+			},
+			true,
+			true,
+		},
+
+		// writable must have Delete
+		{
+			&Resource{
+				Create: func(d *ResourceData, meta interface{}) error { return nil },
+				Read:   func(d *ResourceData, meta interface{}) error { return nil },
+				Update: func(d *ResourceData, meta interface{}) error { return nil },
+				Schema: map[string]*Schema{
+					"goo": &Schema{
+						Type:     TypeInt,
+						Optional: true,
+					},
+				},
+			},
+			true,
+			true,
 		},
 	}
 
 	for i, tc := range cases {
-		err := tc.In.InternalValidate(schemaMap{})
-		if err != nil != tc.Err {
-			t.Fatalf("%d: bad: %s", i, err)
-		}
+		t.Run(fmt.Sprintf("#%d", i), func(t *testing.T) {
+			err := tc.In.InternalValidate(schemaMap{}, tc.Writable)
+			if err != nil != tc.Err {
+				t.Fatalf("%d: bad: %s", i, err)
+			}
+		})
 	}
 }
 
@@ -763,5 +914,63 @@ func TestResourceRefresh_migrateStateErr(t *testing.T) {
 	_, err := r.Refresh(s, nil)
 	if err == nil {
 		t.Fatal("expected error, but got none!")
+	}
+}
+
+func TestResourceData(t *testing.T) {
+	r := &Resource{
+		SchemaVersion: 2,
+		Schema: map[string]*Schema{
+			"foo": &Schema{
+				Type:     TypeInt,
+				Optional: true,
+			},
+		},
+	}
+
+	state := &terraform.InstanceState{
+		ID: "foo",
+		Attributes: map[string]string{
+			"id":  "foo",
+			"foo": "42",
+		},
+	}
+
+	data := r.Data(state)
+	if data.Id() != "foo" {
+		t.Fatalf("err: %s", data.Id())
+	}
+	if v := data.Get("foo"); v != 42 {
+		t.Fatalf("bad: %#v", v)
+	}
+
+	// Set expectations
+	state.Meta = map[string]string{
+		"schema_version": "2",
+	}
+
+	result := data.State()
+	if !reflect.DeepEqual(result, state) {
+		t.Fatalf("bad: %#v", result)
+	}
+}
+
+func TestResourceData_blank(t *testing.T) {
+	r := &Resource{
+		SchemaVersion: 2,
+		Schema: map[string]*Schema{
+			"foo": &Schema{
+				Type:     TypeInt,
+				Optional: true,
+			},
+		},
+	}
+
+	data := r.Data(nil)
+	if data.Id() != "" {
+		t.Fatalf("err: %s", data.Id())
+	}
+	if v := data.Get("foo"); v != 0 {
+		t.Fatalf("bad: %#v", v)
 	}
 }

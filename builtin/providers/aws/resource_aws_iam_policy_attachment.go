@@ -3,10 +3,13 @@ package aws
 import (
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
 
@@ -22,6 +25,13 @@ func resourceAwsIamPolicyAttachment() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				ValidateFunc: func(v interface{}, k string) (ws []string, errors []error) {
+					if v.(string) == "" {
+						errors = append(errors, fmt.Errorf(
+							"%q cannot be an empty string", k))
+					}
+					return
+				},
 			},
 			"users": &schema.Schema{
 				Type:     schema.TypeSet,
@@ -100,28 +110,29 @@ func resourceAwsIamPolicyAttachmentRead(d *schema.ResourceData, meta interface{}
 		return err
 	}
 
-	policyEntities, err := conn.ListEntitiesForPolicy(&iam.ListEntitiesForPolicyInput{
-		PolicyArn: aws.String(arn),
-	})
+	ul := make([]string, 0)
+	rl := make([]string, 0)
+	gl := make([]string, 0)
 
+	args := iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String(arn),
+	}
+	err = conn.ListEntitiesForPolicyPages(&args, func(page *iam.ListEntitiesForPolicyOutput, lastPage bool) bool {
+		for _, u := range page.PolicyUsers {
+			ul = append(ul, *u.UserName)
+		}
+
+		for _, r := range page.PolicyRoles {
+			rl = append(rl, *r.RoleName)
+		}
+
+		for _, g := range page.PolicyGroups {
+			gl = append(gl, *g.GroupName)
+		}
+		return true
+	})
 	if err != nil {
 		return err
-	}
-
-	ul := make([]string, 0, len(policyEntities.PolicyUsers))
-	rl := make([]string, 0, len(policyEntities.PolicyRoles))
-	gl := make([]string, 0, len(policyEntities.PolicyGroups))
-
-	for _, u := range policyEntities.PolicyUsers {
-		ul = append(ul, *u.UserName)
-	}
-
-	for _, r := range policyEntities.PolicyRoles {
-		rl = append(rl, *r.RoleName)
-	}
-
-	for _, g := range policyEntities.PolicyGroups {
-		gl = append(gl, *g.GroupName)
 	}
 
 	userErr := d.Set("users", ul)
@@ -209,6 +220,39 @@ func attachPolicyToRoles(conn *iam.IAM, roles []*string, arn string) error {
 		})
 		if err != nil {
 			return err
+		}
+
+		var attachmentErr error
+		attachmentErr = resource.Retry(2*time.Minute, func() *resource.RetryError {
+
+			input := iam.ListRolePoliciesInput{
+				RoleName: r,
+			}
+
+			attachedPolicies, err := conn.ListRolePolicies(&input)
+			if err != nil {
+				return resource.NonRetryableError(err)
+			}
+
+			if len(attachedPolicies.PolicyNames) > 0 {
+				var foundPolicy bool
+				for _, policyName := range attachedPolicies.PolicyNames {
+					if strings.HasSuffix(arn, *policyName) {
+						foundPolicy = true
+						break
+					}
+				}
+
+				if !foundPolicy {
+					return resource.NonRetryableError(err)
+				}
+			}
+
+			return nil
+		})
+
+		if attachmentErr != nil {
+			return attachmentErr
 		}
 	}
 	return nil

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
@@ -17,13 +16,13 @@ func resourceComputeRoute() *schema.Resource {
 		Delete: resourceComputeRouteDelete,
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"dest_range": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"dest_range": &schema.Schema{
+			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
@@ -35,7 +34,13 @@ func resourceComputeRoute() *schema.Resource {
 				ForceNew: true,
 			},
 
-			"next_hop_ip": &schema.Schema{
+			"priority": &schema.Schema{
+				Type:     schema.TypeInt,
+				Required: true,
+				ForceNew: true,
+			},
+
+			"next_hop_gateway": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -53,7 +58,7 @@ func resourceComputeRoute() *schema.Resource {
 				ForceNew: true,
 			},
 
-			"next_hop_gateway": &schema.Schema{
+			"next_hop_ip": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -61,8 +66,7 @@ func resourceComputeRoute() *schema.Resource {
 
 			"next_hop_network": &schema.Schema{
 				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
+				Computed: true,
 			},
 
 			"next_hop_vpn_tunnel": &schema.Schema{
@@ -71,10 +75,15 @@ func resourceComputeRoute() *schema.Resource {
 				ForceNew: true,
 			},
 
-			"priority": &schema.Schema{
-				Type:     schema.TypeInt,
-				Required: true,
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
 				ForceNew: true,
+			},
+
+			"self_link": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
 			},
 
 			"tags": &schema.Schema{
@@ -82,14 +91,7 @@ func resourceComputeRoute() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
-			},
-
-			"self_link": &schema.Schema{
-				Type:     schema.TypeString,
-				Computed: true,
+				Set:      schema.HashString,
 			},
 		},
 	}
@@ -98,28 +100,36 @@ func resourceComputeRoute() *schema.Resource {
 func resourceComputeRouteCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Look up the network to attach the route to
-	network, err := config.clientCompute.Networks.Get(
-		config.Project, d.Get("network").(string)).Do()
+	network, err := getNetworkLink(d, config, "network")
 	if err != nil {
 		return fmt.Errorf("Error reading network: %s", err)
 	}
 
 	// Next hop data
-	var nextHopInstance, nextHopIp, nextHopNetwork, nextHopGateway,
+	var nextHopInstance, nextHopIp, nextHopGateway,
 		nextHopVpnTunnel string
 	if v, ok := d.GetOk("next_hop_ip"); ok {
 		nextHopIp = v.(string)
 	}
 	if v, ok := d.GetOk("next_hop_gateway"); ok {
-		nextHopGateway = v.(string)
+		if v == "default-internet-gateway" {
+			nextHopGateway = fmt.Sprintf("projects/%s/global/gateways/default-internet-gateway", project)
+		} else {
+			nextHopGateway = v.(string)
+		}
 	}
 	if v, ok := d.GetOk("next_hop_vpn_tunnel"); ok {
 		nextHopVpnTunnel = v.(string)
 	}
 	if v, ok := d.GetOk("next_hop_instance"); ok {
 		nextInstance, err := config.clientCompute.Instances.Get(
-			config.Project,
+			project,
 			d.Get("next_hop_instance_zone").(string),
 			v.(string)).Do()
 		if err != nil {
@@ -127,15 +137,6 @@ func resourceComputeRouteCreate(d *schema.ResourceData, meta interface{}) error 
 		}
 
 		nextHopInstance = nextInstance.SelfLink
-	}
-	if v, ok := d.GetOk("next_hop_network"); ok {
-		nextNetwork, err := config.clientCompute.Networks.Get(
-			config.Project, v.(string)).Do()
-		if err != nil {
-			return fmt.Errorf("Error reading network: %s", err)
-		}
-
-		nextHopNetwork = nextNetwork.SelfLink
 	}
 
 	// Tags
@@ -151,18 +152,17 @@ func resourceComputeRouteCreate(d *schema.ResourceData, meta interface{}) error 
 	route := &compute.Route{
 		Name:             d.Get("name").(string),
 		DestRange:        d.Get("dest_range").(string),
-		Network:          network.SelfLink,
+		Network:          network,
 		NextHopInstance:  nextHopInstance,
 		NextHopVpnTunnel: nextHopVpnTunnel,
 		NextHopIp:        nextHopIp,
-		NextHopNetwork:   nextHopNetwork,
 		NextHopGateway:   nextHopGateway,
 		Priority:         int64(d.Get("priority").(int)),
 		Tags:             tags,
 	}
 	log.Printf("[DEBUG] Route insert request: %#v", route)
 	op, err := config.clientCompute.Routes.Insert(
-		config.Project, route).Do()
+		project, route).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating route: %s", err)
 	}
@@ -170,7 +170,7 @@ func resourceComputeRouteCreate(d *schema.ResourceData, meta interface{}) error 
 	// It probably maybe worked, so store the ID now
 	d.SetId(route.Name)
 
-	err = computeOperationWaitGlobal(config, op, "Creating Route")
+	err = computeOperationWaitGlobal(config, op, project, "Creating Route")
 	if err != nil {
 		return err
 	}
@@ -181,8 +181,13 @@ func resourceComputeRouteCreate(d *schema.ResourceData, meta interface{}) error 
 func resourceComputeRouteRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	route, err := config.clientCompute.Routes.Get(
-		config.Project, d.Id()).Do()
+		project, d.Id()).Do()
 	if err != nil {
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
 			log.Printf("[WARN] Removing Route %q because it's gone", d.Get("name").(string))
@@ -195,6 +200,7 @@ func resourceComputeRouteRead(d *schema.ResourceData, meta interface{}) error {
 		return fmt.Errorf("Error reading route: %#v", err)
 	}
 
+	d.Set("next_hop_network", route.NextHopNetwork)
 	d.Set("self_link", route.SelfLink)
 
 	return nil
@@ -203,14 +209,19 @@ func resourceComputeRouteRead(d *schema.ResourceData, meta interface{}) error {
 func resourceComputeRouteDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Delete the route
 	op, err := config.clientCompute.Routes.Delete(
-		config.Project, d.Id()).Do()
+		project, d.Id()).Do()
 	if err != nil {
 		return fmt.Errorf("Error deleting route: %s", err)
 	}
 
-	err = computeOperationWaitGlobal(config, op, "Deleting Route")
+	err = computeOperationWaitGlobal(config, op, project, "Deleting Route")
 	if err != nil {
 		return err
 	}

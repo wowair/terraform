@@ -35,6 +35,7 @@ Available commands are:
     remote     Configure remote state storage
     show       Inspect Terraform state or plan
     taint      Manually mark a resource for recreation
+    validate   Validates the Terraform files
     version    Prints the Terraform version
 ```
 
@@ -54,4 +55,3 @@ Usage: terraform graph [options] PATH
   read this format is GraphViz, but many web services are also available
   to read this format.
 ```
-

@@ -178,7 +178,7 @@ func resourcesStr(rs []*Resource) string {
 	ks := make([]string, 0, len(rs))
 	mapping := make(map[string]int)
 	for i, r := range rs {
-		k := fmt.Sprintf("%s[%s]", r.Type, r.Name)
+		k := r.Id()
 		ks = append(ks, k)
 		mapping[k] = i
 	}
@@ -190,9 +190,8 @@ func resourcesStr(rs []*Resource) string {
 	for _, i := range order {
 		r := rs[i]
 		result += fmt.Sprintf(
-			"%s[%s] (x%s)\n",
-			r.Type,
-			r.Name,
+			"%s (x%s)\n",
+			r.Id(),
 			r.RawCount.Value())
 
 		ks := make([]string, 0, len(r.RawConfig.Raw))
@@ -278,6 +277,11 @@ func variablesStr(vs []*Variable) string {
 			required = " (required)"
 		}
 
+		declaredType := ""
+		if v.DeclaredType != "" {
+			declaredType = fmt.Sprintf(" (%s)", v.DeclaredType)
+		}
+
 		if v.Default == nil || v.Default == "" {
 			v.Default = "<>"
 		}
@@ -286,9 +290,10 @@ func variablesStr(vs []*Variable) string {
 		}
 
 		result += fmt.Sprintf(
-			"%s%s\n  %v\n  %s\n",
+			"%s%s%s\n  %v\n  %s\n",
 			k,
 			required,
+			declaredType,
 			v.Default,
 			v.Description)
 	}

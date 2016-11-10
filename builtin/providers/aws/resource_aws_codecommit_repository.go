@@ -74,13 +74,6 @@ func resourceAwsCodeCommitRepository() *schema.Resource {
 
 func resourceAwsCodeCommitRepositoryCreate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).codecommitconn
-	region := meta.(*AWSClient).region
-
-	//	This is a temporary thing - we need to ensure that CodeCommit is only being run against us-east-1
-	//	As this is the only place that AWS currently supports it
-	if region != "us-east-1" {
-		return fmt.Errorf("CodeCommit can only be used with us-east-1. You are trying to use it on %s", region)
-	}
 
 	input := &codecommit.CreateRepositoryInput{
 		RepositoryName:        aws.String(d.Get("repository_name").(string)),
@@ -93,10 +86,10 @@ func resourceAwsCodeCommitRepositoryCreate(d *schema.ResourceData, meta interfac
 	}
 
 	d.SetId(d.Get("repository_name").(string))
-	d.Set("repository_id", *out.RepositoryMetadata.RepositoryId)
-	d.Set("arn", *out.RepositoryMetadata.Arn)
-	d.Set("clone_url_http", *out.RepositoryMetadata.CloneUrlHttp)
-	d.Set("clone_url_ssh", *out.RepositoryMetadata.CloneUrlSsh)
+	d.Set("repository_id", out.RepositoryMetadata.RepositoryId)
+	d.Set("arn", out.RepositoryMetadata.Arn)
+	d.Set("clone_url_http", out.RepositoryMetadata.CloneUrlHttp)
+	d.Set("clone_url_ssh", out.RepositoryMetadata.CloneUrlSsh)
 
 	return resourceAwsCodeCommitRepositoryUpdate(d, meta)
 }
@@ -104,9 +97,11 @@ func resourceAwsCodeCommitRepositoryCreate(d *schema.ResourceData, meta interfac
 func resourceAwsCodeCommitRepositoryUpdate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).codecommitconn
 
-	if d.HasChange("default_branch") {
-		if err := resourceAwsCodeCommitUpdateDefaultBranch(conn, d); err != nil {
-			return err
+	if _, ok := d.GetOk("default_branch"); ok {
+		if d.HasChange("default_branch") {
+			if err := resourceAwsCodeCommitUpdateDefaultBranch(conn, d); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -131,12 +126,15 @@ func resourceAwsCodeCommitRepositoryRead(d *schema.ResourceData, meta interface{
 		return fmt.Errorf("Error reading CodeCommit Repository: %s", err.Error())
 	}
 
-	d.Set("repository_id", *out.RepositoryMetadata.RepositoryId)
-	d.Set("arn", *out.RepositoryMetadata.Arn)
-	d.Set("clone_url_http", *out.RepositoryMetadata.CloneUrlHttp)
-	d.Set("clone_url_ssh", *out.RepositoryMetadata.CloneUrlSsh)
-	if out.RepositoryMetadata.DefaultBranch != nil {
-		d.Set("default_branch", *out.RepositoryMetadata.DefaultBranch)
+	d.Set("repository_id", out.RepositoryMetadata.RepositoryId)
+	d.Set("arn", out.RepositoryMetadata.Arn)
+	d.Set("clone_url_http", out.RepositoryMetadata.CloneUrlHttp)
+	d.Set("clone_url_ssh", out.RepositoryMetadata.CloneUrlSsh)
+
+	if _, ok := d.GetOk("default_branch"); ok {
+		if out.RepositoryMetadata.DefaultBranch != nil {
+			d.Set("default_branch", out.RepositoryMetadata.DefaultBranch)
+		}
 	}
 
 	return nil
@@ -171,12 +169,26 @@ func resourceAwsCodeCommitUpdateDescription(conn *codecommit.CodeCommit, d *sche
 }
 
 func resourceAwsCodeCommitUpdateDefaultBranch(conn *codecommit.CodeCommit, d *schema.ResourceData) error {
+	input := &codecommit.ListBranchesInput{
+		RepositoryName: aws.String(d.Id()),
+	}
+
+	out, err := conn.ListBranches(input)
+	if err != nil {
+		return fmt.Errorf("Error reading CodeCommit Repository branches: %s", err.Error())
+	}
+
+	if len(out.Branches) == 0 {
+		log.Printf("[WARN] Not setting Default Branch CodeCommit Repository that has no branches: %s", d.Id())
+		return nil
+	}
+
 	branchInput := &codecommit.UpdateDefaultBranchInput{
 		RepositoryName:    aws.String(d.Id()),
 		DefaultBranchName: aws.String(d.Get("default_branch").(string)),
 	}
 
-	_, err := conn.UpdateDefaultBranch(branchInput)
+	_, err = conn.UpdateDefaultBranch(branchInput)
 	if err != nil {
 		return fmt.Errorf("Error Updating Default Branch for CodeCommit Repository: %s", err.Error())
 	}

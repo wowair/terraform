@@ -54,7 +54,7 @@ The following arguments are supported:
 * `availability_zones` - (Optional) A list of AZs to launch resources in.
    Required only if you do not specify any `vpc_zone_identifier`
 * `launch_configuration` - (Required) The name of the launch configuration to use.
-* `health_check_grace_period` - (Optional) Time after instance comes into service before checking health.
+* `health_check_grace_period` - (Optional, Default: 300) Time (in seconds) after instance comes into service before checking health.
 * `health_check_type` - (Optional) "EC2" or "ELB". Controls how health checking is done.
 * `desired_capacity` - (Optional) The number of Amazon EC2 instances that
     should be running in the group. (See also [Waiting for
@@ -67,17 +67,30 @@ The following arguments are supported:
 * `load_balancers` (Optional) A list of load balancer names to add to the autoscaling
    group names.
 * `vpc_zone_identifier` (Optional) A list of subnet IDs to launch resources in.
-* `termination_policies` (Optional) A list of policies to decide how the instances in the auto scale group should be terminated.
+* `target_group_arns` (Optional) A list of `aws_alb_target_group` ARNs, for use with
+Application Load Balancing
+* `termination_policies` (Optional) A list of policies to decide how the instances in the auto scale group should be terminated. The allowed values are `OldestInstance`, `NewestInstance`, `OldestLaunchConfiguration`, `ClosestToNextInstanceHour`, `Default`.
 * `tag` (Optional) A list of tag blocks. Tags documented below.
 * `placement_group` (Optional) The name of the placement group into which you'll launch your instances, if any.
+* `metrics_granularity` - (Optional) The granularity to associate with the metrics to collect. The only valid value is `1Minute`. Default is `1Minute`.
+* `enabled_metrics` - (Optional) A list of metrics to collect. The allowed values are `GroupMinSize`, `GroupMaxSize`, `GroupDesiredCapacity`, `GroupInServiceInstances`, `GroupPendingInstances`, `GroupStandbyInstances`, `GroupTerminatingInstances`, `GroupTotalInstances`.
 * `wait_for_capacity_timeout` (Default: "10m") A maximum
   [duration](https://golang.org/pkg/time/#ParseDuration) that Terraform should
   wait for ASG instances to be healthy before timing out.  (See also [Waiting
   for Capacity](#waiting-for-capacity) below.) Setting this to "0" causes
   Terraform to skip all Capacity Waiting behavior.
-* `wait_for_elb_capacity` - (Optional) Setting this will cause Terraform to wait
-  for this number of healthy instances all attached load balancers.
+* `min_elb_capacity` - (Optional) Setting this causes Terraform to wait for
+  this number of instances to show up healthy in the ELB only on creation.
+  Updates will not wait on ELB instance number changes.
   (See also [Waiting for Capacity](#waiting-for-capacity) below.)
+* `wait_for_elb_capacity` - (Optional) Setting this will cause Terraform to wait
+  for exactly this number of healthy instances in all attached load balancers
+  on both create and update operations. (Takes precedence over
+  `min_elb_capacity` behavior.)
+  (See also [Waiting for Capacity](#waiting-for-capacity) below.)
+* `protect_from_scale_in` (Optional) Allows setting instance protection. The
+   autoscaling group will not select instances with this setting for terminination
+   during scale in events.
 
 Tags support the following:
 
@@ -86,15 +99,12 @@ Tags support the following:
 * `propagate_at_launch` - (Required) Enables propagation of the tag to
    Amazon EC2 instances launched via this ASG
 
-The following fields are deprecated:
-
-* `min_elb_capacity` - Please use `wait_for_elb_capacity` instead.
-
 ## Attributes Reference
 
 The following attributes are exported:
 
-* `id` - The autoscaling group name.
+* `id` - The autoscaling group id.
+* `arn` - The ARN for this AutoScaling Group
 * `availability_zones` - The availability zones of the autoscale group.
 * `min_size` - The minimum size of the autoscale group
 * `max_size` - The maximum size of the autoscale group
@@ -104,18 +114,22 @@ The following attributes are exported:
 * `health_check_type` - "EC2" or "ELB". Controls how health checking is done.
 * `desired_capacity` -The number of Amazon EC2 instances that should be running in the group.
 * `launch_configuration` - The launch configuration of the autoscale group
-* `vpc_zone_identifier` - The VPC zone identifier
+* `vpc_zone_identifier` (Optional) - The VPC zone identifier
 * `load_balancers` (Optional) The load balancer names associated with the
    autoscaling group.
+* `target_group_arns` (Optional) list of Target Group ARNs that apply to this
+AutoScaling Group
 
 ~> **NOTE:** When using `ELB` as the health_check_type, `health_check_grace_period` is required.
 
-<a id="waiting-for-capacity"></a>
 ## Waiting for Capacity
 
 A newly-created ASG is initially empty and begins to scale to `min_size` (or
 `desired_capacity`, if specified) by launching instances using the provided
 Launch Configuration. These instances take time to launch and boot.
+
+On ASG Update, changes to these values also take time to result in the target
+number of instances providing service.
 
 Terraform provides two mechanisms to help consistently manage ASG scale up
 time across dependent resources.
@@ -144,14 +158,37 @@ Setting `wait_for_capacity_timeout` to `"0"` disables ASG Capacity waiting.
 
 #### Waiting for ELB Capacity
 
-The second mechanism is optional, and affects ASGs with attached Load
-Balancers. If `wait_for_elb_capacity` is set, Terraform will wait for that
-number of Instances to be `"InService"` in all attached `load_balancers`. This
-can be used to ensure that service is being provided before Terraform moves on.
+The second mechanism is optional, and affects ASGs with attached ELBs specified
+via the `load_balancers` attribute.
+
+The `min_elb_capacity` parameter causes Terraform to wait for at least the
+requested number of instances to show up `"InService"` in all attached ELBs
+during ASG creation.  It has no effect on ASG updates.
+
+If `wait_for_elb_capacity` is set, Terraform will wait for exactly that number
+of Instances to be `"InService"` in all attached ELBs on both creation and
+updates.
+
+These parameters can be used to ensure that service is being provided before
+Terraform moves on. If new instances don't pass the ELB's health checks for any
+reason, the Terraform apply will time out, and the ASG will be marked as
+tainted (i.e. marked to be destroyed in a follow up run).
 
 As with ASG Capacity, Terraform will wait for up to `wait_for_capacity_timeout`
-(for `"InService"` instances. If ASG creation takes more than a few minutes,
-this could indicate one of a number of configuration problems. See the [AWS
-Docs on Load Balancer
+for the proper number of instances to be healthy.
+
+#### Troubleshooting Capacity Waiting Timeouts
+
+If ASG creation takes more than a few minutes, this could indicate one of a
+number of configuration problems. See the [AWS Docs on Load Balancer
 Troubleshooting](https://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/elb-troubleshooting.html)
 for more information.
+
+
+## Import
+
+AutoScaling Groups can be imported using the `name`, e.g. 
+
+```
+$ terraform import aws_autoscaling_group.web web-asg
+```

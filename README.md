@@ -2,7 +2,7 @@ Terraform
 =========
 
 - Website: http://www.terraform.io
-- IRC: `#terraform-tool` on Freenode
+- [![Gitter chat](https://badges.gitter.im/hashicorp-terraform/Lobby.png)](https://gitter.im/hashicorp-terraform/Lobby)
 - Mailing list: [Google Groups](http://groups.google.com/group/terraform-tool)
 
 ![Terraform](https://raw.githubusercontent.com/hashicorp/terraform/master/website/source/assets/images/readme.png)
@@ -29,23 +29,18 @@ All documentation is available on the [Terraform website](http://www.terraform.i
 Developing Terraform
 --------------------
 
-If you wish to work on Terraform itself or any of its built-in providers, you'll first need [Go](http://www.golang.org) installed on your machine (version 1.4+ is *required*). Alternatively, you can use the Vagrantfile in the root of this repo to stand up a virtual machine with the appropriate dev tooling already set up for you.
+If you wish to work on Terraform itself or any of its built-in providers, you'll first need [Go](http://www.golang.org) installed on your machine (version 1.7+ is *required*). Alternatively, you can use the Vagrantfile in the root of this repo to stand up a virtual machine with the appropriate dev tooling already set up for you.
 
-For local dev first make sure Go is properly installed, including setting up a [GOPATH](http://golang.org/doc/code.html#GOPATH). You will also need to add `$GOPATH/bin` to your `$PATH`. Next, install the following software packages, which are needed for some dependencies:
+For local dev first make sure Go is properly installed, including setting up a [GOPATH](http://golang.org/doc/code.html#GOPATH). You will also need to add `$GOPATH/bin` to your `$PATH`.
 
-- [Git](http://git-scm.com/)
-- [Mercurial](http://mercurial.selenic.com/)
-
-Next, clone this repository into `$GOPATH/src/github.com/hashicorp/terraform`. Install the necessary dependencies by running `make updatedeps` and then just type `make`. This will compile some more dependencies and then run the tests. If this exits with exit status 0, then everything is working!
+Next, using [Git](https://git-scm.com/), clone this repository into `$GOPATH/src/github.com/hashicorp/terraform`. All the necessary dependencies are either vendored or automatically installed, so you just need to type `make`. This will compile the code and then run the tests. If this exits with exit status 0, then everything is working!
 
 ```sh
-$ make updatedeps
-...
+$ cd $GOPATH/src/github.com/hashicorp/terraform
 $ make
-...
 ```
 
-To compile a development version of Terraform and the built-in plugins, run `make dev`. This will put Terraform binaries in the `bin` and `$GOPATH/bin` folders:
+To compile a development version of Terraform and the built-in plugins, run `make dev`. This will build everything using [gox](https://github.com/mitchellh/gox) and put Terraform binaries in the `bin` and `$GOPATH/bin` folders:
 
 ```sh
 $ make dev
@@ -73,30 +68,52 @@ If you're working on the core of Terraform, and only wish to rebuild that withou
 $ make core-dev
 ```
 
+### Dependencies
+
+Terraform stores its dependencies under `vendor/`, which [Go 1.6+ will automatically recognize and load](https://golang.org/cmd/go/#hdr-Vendor_Directories). We use [`govendor`](https://github.com/kardianos/govendor) to manage the vendored dependencies.
+
+If you're developing Terraform, there are a few tasks you might need to perform.
+
+#### Adding a dependency
+
+If you're adding a dependency, you'll need to vendor it in the same Pull Request as the code that depends on it. You should do this in a separate commit from your code, as makes PR review easier and Git history simpler to read in the future.
+
+To add a dependency:
+
+Assuming your work is on a branch called `my-feature-branch`, the steps look like this:
+
+1. Add the new package to your GOPATH:
+
+    ```bash
+    go get github.com/hashicorp/my-project
+    ```
+
+2.  Add the new package to your vendor/ directory:
+
+    ```bash
+    govendor add github.com/hashicorp/my-project/package
+    ```
+
+3. Review the changes in git and commit them.
+
+#### Updating a dependency
+
+To update a dependency:
+
+1. Fetch the dependency:
+
+    ```bash
+    govendor fetch github.com/hashicorp/my-project
+    ```
+
+2. Review the changes in git and commit them.
+
 ### Acceptance Tests
 
-Terraform also has a comprehensive [acceptance test](http://en.wikipedia.org/wiki/Acceptance_testing) suite covering most of the major features of the built-in providers.
+Terraform has a comprehensive [acceptance
+test](http://en.wikipedia.org/wiki/Acceptance_testing) suite covering the
+built-in providers. Our [Contributing Guide](https://github.com/hashicorp/terraform/blob/master/.github/CONTRIBUTING.md) includes details about how and when to write and run acceptance tests in order to help contributions get accepted quickly.
 
-If you're working on a feature of a provider and want to verify it is functioning (and hasn't broken anything else), we recommend running the acceptance tests. Note that we *do not require* that you run or write acceptance tests to have a PR accepted. The acceptance tests are just here for your convenience.
-
-**Warning:** The acceptance tests create/destroy/modify *real resources*, which may incur real costs. In the presence of a bug, it is technically possible that broken providers could corrupt existing infrastructure as well. Therefore, please run the acceptance providers at your own risk. At the very least, we recommend running them in their own private account for whatever provider you're testing.
-
-To run the acceptance tests, invoke `make testacc`:
-
-```sh
-$ make testacc TEST=./builtin/providers/aws TESTARGS='-run=Vpc'
-go generate ./...
-TF_ACC=1 go test ./builtin/providers/aws -v -run=Vpc -timeout 90m
-=== RUN TestAccVpc_basic
-2015/02/10 14:11:17 [INFO] Test: Using us-west-2 as test region
-[...]
-[...]
-...
-```
-
-The `TEST` variable is required, and you should specify the folder where the provider is. The `TESTARGS` variable is recommended to filter down to a specific resource to test, since testing all of them at once can take a very long time.
-
-Acceptance tests typically require other environment variables to be set for things such as access keys. The provider itself should error early and tell you what to set, so it is not documented here.
 
 ### Cross Compilation and Building for Distribution
 
@@ -105,7 +122,7 @@ If you wish to cross-compile Terraform for another architecture, you can set the
 For example, to compile 64-bit Linux binaries on Mac OS X Linux, you can run:
 
 ```sh
-$ XC_OS=linux XC_ARCH=amd64 make bin 
+$ XC_OS=linux XC_ARCH=amd64 make bin
 ...
 $ file pkg/linux_amd64/terraform
 terraform: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, not stripped

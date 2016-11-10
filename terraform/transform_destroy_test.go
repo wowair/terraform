@@ -10,7 +10,32 @@ func TestDestroyTransformer(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
+		if err := tf.Transform(&g); err != nil {
+			t.Fatalf("err: %s", err)
+		}
+	}
+
+	{
+		tf := &DestroyTransformer{}
+		if err := tf.Transform(&g); err != nil {
+			t.Fatalf("err: %s", err)
+		}
+	}
+
+	actual := strings.TrimSpace(g.String())
+	expected := strings.TrimSpace(testTransformDestroyBasicStr)
+	if actual != expected {
+		t.Fatalf("bad:\n\n%s", actual)
+	}
+}
+
+func TestDestroyTransformer_dependsOn(t *testing.T) {
+	mod := testModule(t, "transform-destroy-depends-on")
+
+	g := Graph{Path: RootModulePath}
+	{
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -35,7 +60,7 @@ func TestCreateBeforeDestroyTransformer(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -67,7 +92,7 @@ func TestCreateBeforeDestroyTransformer_twice(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -100,7 +125,7 @@ func TestPruneDestroyTransformer(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -143,7 +168,7 @@ func TestPruneDestroyTransformer_diff(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -177,7 +202,7 @@ func TestPruneDestroyTransformer_count(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -226,7 +251,7 @@ func TestPruneDestroyTransformer_countDec(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -272,7 +297,7 @@ func TestPruneDestroyTransformer_countState(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -322,7 +347,7 @@ func TestPruneDestroyTransformer_prefixMatch(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -359,8 +384,9 @@ func TestPruneDestroyTransformer_tainted(t *testing.T) {
 				Path: RootModulePath,
 				Resources: map[string]*ResourceState{
 					"aws_instance.bar": &ResourceState{
-						Tainted: []*InstanceState{
-							&InstanceState{ID: "foo"},
+						Primary: &InstanceState{
+							ID:      "foo",
+							Tainted: true,
 						},
 					},
 				},
@@ -370,7 +396,7 @@ func TestPruneDestroyTransformer_tainted(t *testing.T) {
 
 	g := Graph{Path: RootModulePath}
 	{
-		tf := &ConfigTransformer{Module: mod}
+		tf := &ConfigTransformerOld{Module: mod}
 		if err := tf.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -399,16 +425,11 @@ func TestPruneDestroyTransformer_tainted(t *testing.T) {
 
 const testTransformDestroyBasicStr = `
 aws_instance.bar
-  aws_instance.bar (destroy tainted)
   aws_instance.bar (destroy)
   aws_instance.foo
-aws_instance.bar (destroy tainted)
 aws_instance.bar (destroy)
 aws_instance.foo
-  aws_instance.foo (destroy tainted)
   aws_instance.foo (destroy)
-aws_instance.foo (destroy tainted)
-  aws_instance.bar (destroy tainted)
 aws_instance.foo (destroy)
   aws_instance.bar (destroy)
 `
@@ -456,40 +477,28 @@ aws_instance.foo-bar (destroy)
 
 const testTransformPruneDestroyTaintedStr = `
 aws_instance.bar
-  aws_instance.bar (destroy tainted)
   aws_instance.foo
-aws_instance.bar (destroy tainted)
 aws_instance.foo
 `
 
 const testTransformCreateBeforeDestroyBasicStr = `
 aws_instance.web
-  aws_instance.web (destroy tainted)
-aws_instance.web (destroy tainted)
-  aws_load_balancer.lb (destroy tainted)
 aws_instance.web (destroy)
   aws_instance.web
   aws_load_balancer.lb
   aws_load_balancer.lb (destroy)
 aws_load_balancer.lb
   aws_instance.web
-  aws_load_balancer.lb (destroy tainted)
   aws_load_balancer.lb (destroy)
-aws_load_balancer.lb (destroy tainted)
 aws_load_balancer.lb (destroy)
 `
 
 const testTransformCreateBeforeDestroyTwiceStr = `
 aws_autoscale.bar
-  aws_autoscale.bar (destroy tainted)
   aws_lc.foo
-aws_autoscale.bar (destroy tainted)
 aws_autoscale.bar (destroy)
   aws_autoscale.bar
 aws_lc.foo
-  aws_lc.foo (destroy tainted)
-aws_lc.foo (destroy tainted)
-  aws_autoscale.bar (destroy tainted)
 aws_lc.foo (destroy)
   aws_autoscale.bar
   aws_autoscale.bar (destroy)

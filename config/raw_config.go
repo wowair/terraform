@@ -5,8 +5,8 @@ import (
 	"encoding/gob"
 	"sync"
 
-	"github.com/hashicorp/terraform/config/lang"
-	"github.com/hashicorp/terraform/config/lang/ast"
+	"github.com/hashicorp/hil"
+	"github.com/hashicorp/hil/ast"
 	"github.com/mitchellh/copystructure"
 	"github.com/mitchellh/reflectwalk"
 )
@@ -18,7 +18,7 @@ import (
 const UnknownVariableValue = "74D93920-ED26-11E3-AC10-0800200C9A66"
 
 // RawConfig is a structure that holds a piece of configuration
-// where te overall structure is unknown since it will be used
+// where the overall structure is unknown since it will be used
 // to configure a plugin or some other similar external component.
 //
 // RawConfigs can be interpolated with variables that come from
@@ -48,12 +48,33 @@ func NewRawConfig(raw map[string]interface{}) (*RawConfig, error) {
 	return result, nil
 }
 
-// Copy returns a copy of this RawConfig, uninterpolated.
-func (r *RawConfig) Copy() *RawConfig {
+// RawMap returns a copy of the RawConfig.Raw map.
+func (r *RawConfig) RawMap() map[string]interface{} {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	result, err := NewRawConfig(r.Raw)
+	m := make(map[string]interface{})
+	for k, v := range r.Raw {
+		m[k] = v
+	}
+	return m
+}
+
+// Copy returns a copy of this RawConfig, uninterpolated.
+func (r *RawConfig) Copy() *RawConfig {
+	if r == nil {
+		return nil
+	}
+
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	newRaw := make(map[string]interface{})
+	for k, v := range r.Raw {
+		newRaw[k] = v
+	}
+
+	result, err := NewRawConfig(newRaw)
 	if err != nil {
 		panic("copy failed: " + err.Error())
 	}
@@ -88,6 +109,8 @@ func (r *RawConfig) Value() interface{} {
 // structure will always successfully decode into its ultimate
 // structure using something like mapstructure.
 func (r *RawConfig) Config() map[string]interface{} {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	return r.config
 }
 
@@ -103,36 +126,15 @@ func (r *RawConfig) Interpolate(vs map[string]ast.Variable) error {
 	defer r.lock.Unlock()
 
 	config := langEvalConfig(vs)
-	return r.interpolate(func(root ast.Node) (string, error) {
-		// We detect the variables again and check if the value of any
-		// of the variables is the computed value. If it is, then we
-		// treat this entire value as computed.
-		//
-		// We have to do this here before the `lang.Eval` because
-		// if any of the variables it depends on are computed, then
-		// the interpolation can fail at runtime for other reasons. Example:
-		// `${count.index+1}`: in a world where `count.index` is computed,
-		// this would fail a type check since the computed placeholder is
-		// a string, but realistically the whole value is just computed.
-		vars, err := DetectVariables(root)
-		if err != nil {
-			return "", err
-		}
-		for _, v := range vars {
-			varVal, ok := vs[v.FullKey()]
-			if ok && varVal.Value == UnknownVariableValue {
-				return UnknownVariableValue, nil
-			}
-		}
-
+	return r.interpolate(func(root ast.Node) (interface{}, error) {
 		// None of the variables we need are computed, meaning we should
 		// be able to properly evaluate.
-		out, _, err := lang.Eval(root, config)
+		result, err := hil.Eval(root, config)
 		if err != nil {
 			return "", err
 		}
 
-		return out.(string), nil
+		return result.Value, nil
 	})
 }
 
@@ -168,28 +170,33 @@ func (r *RawConfig) Merge(other *RawConfig) *RawConfig {
 	}
 
 	// Build the unknown keys
-	unknownKeys := make(map[string]struct{})
-	for _, k := range r.unknownKeys {
-		unknownKeys[k] = struct{}{}
-	}
-	for _, k := range other.unknownKeys {
-		unknownKeys[k] = struct{}{}
-	}
+	if len(r.unknownKeys) > 0 || len(other.unknownKeys) > 0 {
+		unknownKeys := make(map[string]struct{})
+		for _, k := range r.unknownKeys {
+			unknownKeys[k] = struct{}{}
+		}
+		for _, k := range other.unknownKeys {
+			unknownKeys[k] = struct{}{}
+		}
 
-	result.unknownKeys = make([]string, 0, len(unknownKeys))
-	for k, _ := range unknownKeys {
-		result.unknownKeys = append(result.unknownKeys, k)
+		result.unknownKeys = make([]string, 0, len(unknownKeys))
+		for k, _ := range unknownKeys {
+			result.unknownKeys = append(result.unknownKeys, k)
+		}
 	}
 
 	return result
 }
 
 func (r *RawConfig) init() error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	r.config = r.Raw
 	r.Interpolations = nil
 	r.Variables = nil
 
-	fn := func(node ast.Node) (string, error) {
+	fn := func(node ast.Node) (interface{}, error) {
 		r.Interpolations = append(r.Interpolations, node)
 		vars, err := DetectVariables(node)
 		if err != nil {
@@ -254,6 +261,8 @@ func (r *RawConfig) merge(r2 *RawConfig) *RawConfig {
 // UnknownKeys returns the keys of the configuration that are unknown
 // because they had interpolated variables that must be computed.
 func (r *RawConfig) UnknownKeys() []string {
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	return r.unknownKeys
 }
 
@@ -298,7 +307,7 @@ type gobRawConfig struct {
 }
 
 // langEvalConfig returns the evaluation configuration we use to execute.
-func langEvalConfig(vs map[string]ast.Variable) *lang.EvalConfig {
+func langEvalConfig(vs map[string]ast.Variable) *hil.EvalConfig {
 	funcMap := make(map[string]ast.Function)
 	for k, v := range Funcs() {
 		funcMap[k] = v
@@ -307,7 +316,7 @@ func langEvalConfig(vs map[string]ast.Variable) *lang.EvalConfig {
 	funcMap["keys"] = interpolationFuncKeys(vs)
 	funcMap["values"] = interpolationFuncValues(vs)
 
-	return &lang.EvalConfig{
+	return &hil.EvalConfig{
 		GlobalScope: &ast.BasicScope{
 			VarMap:  vs,
 			FuncMap: funcMap,

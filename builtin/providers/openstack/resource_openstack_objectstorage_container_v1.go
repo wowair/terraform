@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/gophercloud/gophercloud/openstack/objectstorage/v1/containers"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/rackspace/gophercloud/openstack/objectstorage/v1/containers"
 )
 
 func resourceObjectStorageContainerV1() *schema.Resource {
@@ -20,7 +20,7 @@ func resourceObjectStorageContainerV1() *schema.Resource {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				DefaultFunc: envDefaultFuncAllowMissing("OS_REGION_NAME"),
+				DefaultFunc: schema.EnvDefaultFunc("OS_REGION_NAME", ""),
 			},
 			"name": &schema.Schema{
 				Type:     schema.TypeString,

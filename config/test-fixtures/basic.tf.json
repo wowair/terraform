@@ -3,6 +3,15 @@
         "foo": {
             "default": "bar",
             "description": "bar"
+        },
+        "bar": {
+            "type": "string"
+        },
+        "baz": {
+            "type": "map",
+            "default": {
+                "key": "value"
+            }
         }
     },
 
@@ -14,6 +23,17 @@
 
         "do": {
             "api_key": "${var.foo}"
+        }
+    },
+
+    "data": {
+        "do": {
+            "simple": {
+                "foo": "baz"
+            },
+            "depends": {
+                "depends_on": ["data.do.simple"]
+            }
         }
     },
 

@@ -16,7 +16,7 @@ func resourceCloudStackVPNGateway() *schema.Resource {
 		Delete: resourceCloudStackVPNGatewayDelete,
 
 		Schema: map[string]*schema.Schema{
-			"vpc": &schema.Schema{
+			"vpc_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
@@ -33,19 +33,13 @@ func resourceCloudStackVPNGateway() *schema.Resource {
 func resourceCloudStackVPNGatewayCreate(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
-	// Retrieve the VPC ID
-	vpcid, e := retrieveID(cs, "vpc", d.Get("vpc").(string))
-	if e != nil {
-		return e.Error()
-	}
-
-	// Create a new parameter struct
+	vpcid := d.Get("vpc_id").(string)
 	p := cs.VPN.NewCreateVpnGatewayParams(vpcid)
 
 	// Create the new VPN Gateway
 	v, err := cs.VPN.CreateVpnGateway(p)
 	if err != nil {
-		return fmt.Errorf("Error creating VPN Gateway for VPC %s: %s", d.Get("vpc").(string), err)
+		return fmt.Errorf("Error creating VPN Gateway for VPC ID %s: %s", vpcid, err)
 	}
 
 	d.SetId(v.Id)
@@ -61,7 +55,7 @@ func resourceCloudStackVPNGatewayRead(d *schema.ResourceData, meta interface{}) 
 	if err != nil {
 		if count == 0 {
 			log.Printf(
-				"[DEBUG] VPN Gateway for VPC %s does no longer exist", d.Get("vpc").(string))
+				"[DEBUG] VPN Gateway for VPC ID %s does no longer exist", d.Get("vpc_id").(string))
 			d.SetId("")
 			return nil
 		}
@@ -69,8 +63,7 @@ func resourceCloudStackVPNGatewayRead(d *schema.ResourceData, meta interface{}) 
 		return err
 	}
 
-	setValueOrID(d, "vpc", d.Get("vpc").(string), v.Vpcid)
-
+	d.Set("vpc_id", v.Vpcid)
 	d.Set("public_ip", v.Publicip)
 
 	return nil
@@ -92,7 +85,7 @@ func resourceCloudStackVPNGatewayDelete(d *schema.ResourceData, meta interface{}
 			return nil
 		}
 
-		return fmt.Errorf("Error deleting VPN Gateway for VPC %s: %s", d.Get("vpc").(string), err)
+		return fmt.Errorf("Error deleting VPN Gateway for VPC %s: %s", d.Get("vpc_id").(string), err)
 	}
 
 	return nil

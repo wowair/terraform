@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -18,78 +19,81 @@ func resourceComputeFirewall() *schema.Resource {
 		Read:   resourceComputeFirewallRead,
 		Update: resourceComputeFirewallUpdate,
 		Delete: resourceComputeFirewallDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
+		SchemaVersion: 1,
+		MigrateState:  resourceComputeFirewallMigrateState,
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"description": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-
-			"network": &schema.Schema{
+			"network": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"allow": &schema.Schema{
+			"allow": {
 				Type:     schema.TypeSet,
 				Required: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"protocol": &schema.Schema{
+						"protocol": {
 							Type:     schema.TypeString,
 							Required: true,
 						},
 
-						"ports": &schema.Schema{
-							Type:     schema.TypeSet,
+						"ports": {
+							Type:     schema.TypeList,
 							Optional: true,
 							Elem:     &schema.Schema{Type: schema.TypeString},
-							Set: func(v interface{}) int {
-								return hashcode.String(v.(string))
-							},
 						},
 					},
 				},
 				Set: resourceComputeFirewallAllowHash,
 			},
 
-			"source_ranges": &schema.Schema{
-				Type:     schema.TypeSet,
+			"description": {
+				Type:     schema.TypeString,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
 			},
 
-			"source_tags": &schema.Schema{
-				Type:     schema.TypeSet,
+			"project": {
+				Type:     schema.TypeString,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				ForceNew: true,
+				Computed: true,
 			},
 
-			"target_tags": &schema.Schema{
-				Type:     schema.TypeSet,
-				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
-			},
-
-			"self_link": &schema.Schema{
+			"self_link": {
 				Type:     schema.TypeString,
 				Computed: true,
+			},
+
+			"source_ranges": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Set:      schema.HashString,
+			},
+
+			"source_tags": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Set:      schema.HashString,
+			},
+
+			"target_tags": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Set:      schema.HashString,
 			},
 		},
 	}
@@ -103,11 +107,7 @@ func resourceComputeFirewallAllowHash(v interface{}) int {
 	// We need to make sure to sort the strings below so that we always
 	// generate the same hash code no matter what is in the set.
 	if v, ok := m["ports"]; ok {
-		vs := v.(*schema.Set).List()
-		s := make([]string, len(vs))
-		for i, raw := range vs {
-			s[i] = raw.(string)
-		}
+		s := convertStringArr(v.([]interface{}))
 		sort.Strings(s)
 
 		for _, v := range s {
@@ -121,13 +121,18 @@ func resourceComputeFirewallAllowHash(v interface{}) int {
 func resourceComputeFirewallCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	firewall, err := resourceFirewall(d, meta)
 	if err != nil {
 		return err
 	}
 
 	op, err := config.clientCompute.Firewalls.Insert(
-		config.Project, firewall).Do()
+		project, firewall).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating firewall: %s", err)
 	}
@@ -135,7 +140,7 @@ func resourceComputeFirewallCreate(d *schema.ResourceData, meta interface{}) err
 	// It probably maybe worked, so store the ID now
 	d.SetId(firewall.Name)
 
-	err = computeOperationWaitGlobal(config, op, "Creating Firewall")
+	err = computeOperationWaitGlobal(config, op, project, "Creating Firewall")
 	if err != nil {
 		return err
 	}
@@ -143,11 +148,28 @@ func resourceComputeFirewallCreate(d *schema.ResourceData, meta interface{}) err
 	return resourceComputeFirewallRead(d, meta)
 }
 
+func flattenAllowed(allowed []*compute.FirewallAllowed) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(allowed))
+	for _, allow := range allowed {
+		allowMap := make(map[string]interface{})
+		allowMap["protocol"] = allow.IPProtocol
+		allowMap["ports"] = allow.Ports
+
+		result = append(result, allowMap)
+	}
+	return result
+}
+
 func resourceComputeFirewallRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	firewall, err := config.clientCompute.Firewalls.Get(
-		config.Project, d.Id()).Do()
+		project, d.Id()).Do()
 	if err != nil {
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
 			// The resource doesn't exist anymore
@@ -160,13 +182,26 @@ func resourceComputeFirewallRead(d *schema.ResourceData, meta interface{}) error
 		return fmt.Errorf("Error reading firewall: %s", err)
 	}
 
+	networkUrl := strings.Split(firewall.Network, "/")
 	d.Set("self_link", firewall.SelfLink)
-
+	d.Set("name", firewall.Name)
+	d.Set("network", networkUrl[len(networkUrl)-1])
+	d.Set("description", firewall.Description)
+	d.Set("project", project)
+	d.Set("source_ranges", firewall.SourceRanges)
+	d.Set("source_tags", firewall.SourceTags)
+	d.Set("target_tags", firewall.TargetTags)
+	d.Set("allow", flattenAllowed(firewall.Allowed))
 	return nil
 }
 
 func resourceComputeFirewallUpdate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
 
 	d.Partial(true)
 
@@ -176,12 +211,12 @@ func resourceComputeFirewallUpdate(d *schema.ResourceData, meta interface{}) err
 	}
 
 	op, err := config.clientCompute.Firewalls.Update(
-		config.Project, d.Id(), firewall).Do()
+		project, d.Id(), firewall).Do()
 	if err != nil {
 		return fmt.Errorf("Error updating firewall: %s", err)
 	}
 
-	err = computeOperationWaitGlobal(config, op, "Updating Firewall")
+	err = computeOperationWaitGlobal(config, op, project, "Updating Firewall")
 	if err != nil {
 		return err
 	}
@@ -194,14 +229,19 @@ func resourceComputeFirewallUpdate(d *schema.ResourceData, meta interface{}) err
 func resourceComputeFirewallDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Delete the firewall
 	op, err := config.clientCompute.Firewalls.Delete(
-		config.Project, d.Id()).Do()
+		project, d.Id()).Do()
 	if err != nil {
 		return fmt.Errorf("Error deleting firewall: %s", err)
 	}
 
-	err = computeOperationWaitGlobal(config, op, "Deleting Firewall")
+	err = computeOperationWaitGlobal(config, op, project, "Deleting Firewall")
 	if err != nil {
 		return err
 	}
@@ -215,9 +255,11 @@ func resourceFirewall(
 	meta interface{}) (*compute.Firewall, error) {
 	config := meta.(*Config)
 
+	project, _ := getProject(d, config)
+
 	// Look up the network to attach the firewall to
 	network, err := config.clientCompute.Networks.Get(
-		config.Project, d.Get("network").(string)).Do()
+		project, d.Get("network").(string)).Do()
 	if err != nil {
 		return nil, fmt.Errorf("Error reading network: %s", err)
 	}
@@ -230,10 +272,10 @@ func resourceFirewall(
 			m := v.(map[string]interface{})
 
 			var ports []string
-			if v := m["ports"].(*schema.Set); v.Len() > 0 {
-				ports = make([]string, v.Len())
-				for i, v := range v.List() {
-					ports[i] = v.(string)
+			if v := convertStringArr(m["ports"].([]interface{})); len(v) > 0 {
+				ports = make([]string, len(v))
+				for i, v := range v {
+					ports[i] = v
 				}
 			}
 

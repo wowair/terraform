@@ -16,17 +16,17 @@ Use the navigation to the left to read about the available resources.
 
 ## Example Usage
 
-```
-# Configure the Google Cloud provider
+```js
+// Configure the Google Cloud provider
 provider "google" {
   credentials = "${file("account.json")}"
   project     = "my-gce-project"
   region      = "us-central1"
 }
 
-# Create a new instance
+// Create a new instance
 resource "google_compute_instance" "default" {
-  ...
+  // ...
 }
 ```
 
@@ -39,14 +39,28 @@ The following keys can be used to configure the provider.
   retrieving this file are below. Credentials may be blank if you are running
   Terraform from a GCE instance with a properly-configured [Compute Engine
   Service Account](https://cloud.google.com/compute/docs/authentication). This
-  can also be specified with the `GOOGLE_CREDENTIALS` shell environment
-  variable.
+  can also be specified using any of the following environment variables
+  (listed in order of precedence):
+
+    * `GOOGLE_CREDENTIALS`
+    * `GOOGLE_CLOUD_KEYFILE_JSON`
+    * `GCLOUD_KEYFILE_JSON`
 
 * `project` - (Required) The ID of the project to apply any resources to.  This
-  can also be specified with the `GOOGLE_PROJECT` shell environment variable.
+  can be specified using any of the following environment variables (listed in
+  order of precedence):
+
+    * `GOOGLE_PROJECT`
+    * `GCLOUD_PROJECT`
+    * `CLOUDSDK_CORE_PROJECT`
 
 * `region` - (Required) The region to operate under. This can also be specified
-  with the `GOOGLE_REGION` shell environment variable.
+  using any of the following environment variables (listed in order of
+  precedence):
+
+    * `GOOGLE_REGION`
+    * `GCLOUD_REGION`
+    * `CLOUDSDK_COMPUTE_REGION`
 
 The following keys are supported for backwards compatibility, and may be
 removed in a future version:
@@ -73,10 +87,10 @@ the process more straightforwarded, it is documented here:
 1. Log into the [Google Developers Console](https://console.developers.google.com)
    and select a project.
 
-2. Click the menu button in the top left corner, and navigate to "Permissions",
-   then "Service accounts", and finally "Create service account".
+2. The API Manager view should be selected, click on "Credentials" on the left,
+   then "Create credentials", and finally "Service account key".
 
-3. Provide a name and ID in the corresponding fields, select
-   "Furnish a new private key", and select "JSON" as the key type.
+3. Select "Compute Engine default service account" in the "Service account"
+   dropdown, and select "JSON" as the key type.
 
 4. Clicking "Create" will download your `credentials`.

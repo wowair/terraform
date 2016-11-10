@@ -19,32 +19,12 @@ func resourceSqlDatabaseInstance() *schema.Resource {
 		Delete: resourceSqlDatabaseInstanceDelete,
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				Computed: true,
-				ForceNew: true,
-			},
-			"master_instance_name": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
-			},
-			"database_version": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				Default:  "MYSQL_5_5",
-				ForceNew: true,
-			},
 			"region": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"self_link": &schema.Schema{
-				Type:     schema.TypeString,
-				Computed: true,
-			},
+
 			"settings": &schema.Schema{
 				Type:     schema.TypeList,
 				Required: true,
@@ -170,6 +150,51 @@ func resourceSqlDatabaseInstance() *schema.Resource {
 					},
 				},
 			},
+
+			"database_version": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Default:  "MYSQL_5_6",
+				ForceNew: true,
+			},
+
+			"ip_address": &schema.Schema{
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"ip_address": &schema.Schema{
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"time_to_retire": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+							Computed: true,
+						},
+					},
+				},
+			},
+
+			"name": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+			},
+
+			"master_instance_name": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"replica_configuration": &schema.Schema{
 				Type:     schema.TypeList,
 				Optional: true,
@@ -228,12 +253,22 @@ func resourceSqlDatabaseInstance() *schema.Resource {
 					},
 				},
 			},
+
+			"self_link": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
 		},
 	}
 }
 
 func resourceSqlDatabaseInstanceCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
 
 	region := d.Get("region").(string)
 	databaseVersion := d.Get("database_version").(string)
@@ -451,7 +486,7 @@ func resourceSqlDatabaseInstanceCreate(d *schema.ResourceData, meta interface{})
 		instance.MasterInstanceName = v.(string)
 	}
 
-	op, err := config.clientSqlAdmin.Instances.Insert(config.Project, instance).Do()
+	op, err := config.clientSqlAdmin.Instances.Insert(project, instance).Do()
 	if err != nil {
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 409 {
 			return fmt.Errorf("Error, the name %s is unavailable because it was used recently", instance.Name)
@@ -471,7 +506,12 @@ func resourceSqlDatabaseInstanceCreate(d *schema.ResourceData, meta interface{})
 func resourceSqlDatabaseInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	instance, err := config.clientSqlAdmin.Instances.Get(config.Project,
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	instance, err := config.clientSqlAdmin.Instances.Get(project,
 		d.Get("name").(string)).Do()
 
 	if err != nil {
@@ -577,9 +617,13 @@ func resourceSqlDatabaseInstanceRead(d *schema.ResourceData, meta interface{}) e
 			}
 
 			if vp, okp := _ipConfiguration["authorized_networks"]; okp && vp != nil {
+				_authorizedNetworksList := vp.([]interface{})
 				_ipc_map := make(map[string]interface{})
-				// First keep track of localy defined ip configurations
-				for _, _ipc := range _ipConfigurationList {
+				// First keep track of locally defined ip configurations
+				for _, _ipc := range _authorizedNetworksList {
+					if _ipc == nil {
+						continue
+					}
 					_entry := _ipc.(map[string]interface{})
 					if _entry["value"] == nil {
 						continue
@@ -700,6 +744,19 @@ func resourceSqlDatabaseInstanceRead(d *schema.ResourceData, meta interface{}) e
 		}
 	}
 
+	_ipAddresses := make([]interface{}, len(instance.IpAddresses))
+
+	for i, ip := range instance.IpAddresses {
+		_ipAddress := make(map[string]interface{})
+
+		_ipAddress["ip_address"] = ip.IpAddress
+		_ipAddress["time_to_retire"] = ip.TimeToRetire
+
+		_ipAddresses[i] = _ipAddress
+	}
+
+	d.Set("ip_address", _ipAddresses)
+
 	if v, ok := d.GetOk("master_instance_name"); ok && v != nil {
 		d.Set("master_instance_name", instance.MasterInstanceName)
 	}
@@ -712,9 +769,15 @@ func resourceSqlDatabaseInstanceRead(d *schema.ResourceData, meta interface{}) e
 
 func resourceSqlDatabaseInstanceUpdate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	d.Partial(true)
 
-	instance, err := config.clientSqlAdmin.Instances.Get(config.Project,
+	instance, err := config.clientSqlAdmin.Instances.Get(project,
 		d.Get("name").(string)).Do()
 
 	if err != nil {
@@ -852,7 +915,7 @@ func resourceSqlDatabaseInstanceUpdate(d *schema.ResourceData, meta interface{})
 				}
 
 				if vp, okp := _ipConfiguration["authorized_networks"]; okp || len(_oldAuthorizedNetworkList) > 0 {
-					oldAuthorizedNetworks := settings.IpConfiguration.AuthorizedNetworks
+					oldAuthorizedNetworks := instance.Settings.IpConfiguration.AuthorizedNetworks
 					settings.IpConfiguration.AuthorizedNetworks = make([]*sqladmin.AclEntry, 0)
 
 					_authorizedNetworksList := make([]interface{}, 0)
@@ -873,28 +936,26 @@ func resourceSqlDatabaseInstanceUpdate(d *schema.ResourceData, meta interface{})
 								settings.IpConfiguration.AuthorizedNetworks, entry)
 						}
 					}
-					// finally, insert only those that were previously defined
+					// finally, update old entries and insert new ones
 					// and are still defined.
 					for _, _ipc := range _authorizedNetworksList {
 						_entry := _ipc.(map[string]interface{})
-						if _, ok_old := _oipc_map[_entry["value"].(string)]; ok_old {
-							entry := &sqladmin.AclEntry{}
+						entry := &sqladmin.AclEntry{}
 
-							if vpp, okpp := _entry["expiration_time"]; okpp {
-								entry.ExpirationTime = vpp.(string)
-							}
-
-							if vpp, okpp := _entry["name"]; okpp {
-								entry.Name = vpp.(string)
-							}
-
-							if vpp, okpp := _entry["value"]; okpp {
-								entry.Value = vpp.(string)
-							}
-
-							settings.IpConfiguration.AuthorizedNetworks = append(
-								settings.IpConfiguration.AuthorizedNetworks, entry)
+						if vpp, okpp := _entry["expiration_time"]; okpp {
+							entry.ExpirationTime = vpp.(string)
 						}
+
+						if vpp, okpp := _entry["name"]; okpp {
+							entry.Name = vpp.(string)
+						}
+
+						if vpp, okpp := _entry["value"]; okpp {
+							entry.Value = vpp.(string)
+						}
+
+						settings.IpConfiguration.AuthorizedNetworks = append(
+							settings.IpConfiguration.AuthorizedNetworks, entry)
 					}
 				}
 			}
@@ -933,7 +994,7 @@ func resourceSqlDatabaseInstanceUpdate(d *schema.ResourceData, meta interface{})
 
 	d.Partial(false)
 
-	op, err := config.clientSqlAdmin.Instances.Update(config.Project, instance.Name, instance).Do()
+	op, err := config.clientSqlAdmin.Instances.Update(project, instance.Name, instance).Do()
 	if err != nil {
 		return fmt.Errorf("Error, failed to update instance %s: %s", instance.Name, err)
 	}
@@ -949,7 +1010,12 @@ func resourceSqlDatabaseInstanceUpdate(d *schema.ResourceData, meta interface{})
 func resourceSqlDatabaseInstanceDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	op, err := config.clientSqlAdmin.Instances.Delete(config.Project, d.Get("name").(string)).Do()
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
+	op, err := config.clientSqlAdmin.Instances.Delete(project, d.Get("name").(string)).Do()
 
 	if err != nil {
 		return fmt.Errorf("Error, failed to delete instance %s: %s", d.Get("name").(string), err)

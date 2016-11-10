@@ -21,64 +21,66 @@ func resourceAwsAutoscalingLifecycleHook() *schema.Resource {
 		Delete: resourceAwsAutoscalingLifecycleHookDelete,
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"autoscaling_group_name": &schema.Schema{
+			"autoscaling_group_name": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"default_result": &schema.Schema{
+			"default_result": {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
 			},
-			"heartbeat_timeout": &schema.Schema{
+			"heartbeat_timeout": {
 				Type:     schema.TypeInt,
 				Optional: true,
 			},
-			"lifecycle_transition": &schema.Schema{
+			"lifecycle_transition": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"notification_metadata": &schema.Schema{
+			"notification_metadata": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-			"notification_target_arn": &schema.Schema{
+			"notification_target_arn": {
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 			},
-			"role_arn": &schema.Schema{
+			"role_arn": {
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 			},
 		},
 	}
+}
+
+func resourceAwsAutoscalingLifecycleHookPutOp(conn *autoscaling.AutoScaling, params *autoscaling.PutLifecycleHookInput) error {
+	log.Printf("[DEBUG] AutoScaling PutLifecyleHook: %s", params)
+	return resource.Retry(5*time.Minute, func() *resource.RetryError {
+		_, err := conn.PutLifecycleHook(params)
+
+		if err != nil {
+			if awsErr, ok := err.(awserr.Error); ok {
+				if strings.Contains(awsErr.Message(), "Unable to publish test message to notification target") {
+					return resource.RetryableError(fmt.Errorf("[DEBUG] Retrying AWS AutoScaling Lifecycle Hook: %s", params))
+				}
+			}
+			return resource.NonRetryableError(fmt.Errorf("Error putting lifecycle hook: %s", err))
+		}
+		return nil
+	})
 }
 
 func resourceAwsAutoscalingLifecycleHookPut(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).autoscalingconn
 	params := getAwsAutoscalingPutLifecycleHookInput(d)
 
-	log.Printf("[DEBUG] AutoScaling PutLifecyleHook: %s", params)
-	err := resource.Retry(5*time.Minute, func() error {
-		_, err := conn.PutLifecycleHook(&params)
-
-		if err != nil {
-			if awsErr, ok := err.(awserr.Error); ok {
-				if strings.Contains(awsErr.Message(), "Unable to publish test message to notification target") {
-					return fmt.Errorf("[DEBUG] Retrying AWS AutoScaling Lifecycle Hook: %s", params)
-				}
-			}
-			return resource.RetryError{Err: fmt.Errorf("Error putting lifecycle hook: %s", err)}
-		}
-		return nil
-	})
-
-	if err != nil {
+	if err := resourceAwsAutoscalingLifecycleHookPutOp(conn, &params); err != nil {
 		return err
 	}
 

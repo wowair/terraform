@@ -23,33 +23,46 @@ already.
 A variable configuration looks like the following:
 
 ```
-variable "key" {}
+variable "key" {
+  type = "string"
+}
 
 variable "images" {
-	default = {
-		us-east-1 = "image-1234"
-		us-west-2 = "image-4567"
-	}
+  type = "map"
+
+  default = {
+    us-east-1 = "image-1234"
+    us-west-2 = "image-4567"
+  }
+}
+
+variable "zones" {
+  default = ["us-east-1a", "us-east-1b"]
 }
 ```
 
 ## Description
 
-The `variable`  block configures a single input variable for
+The `variable` block configures a single input variable for
 a Terraform configuration. Multiple variables blocks can be used to
 add multiple variables.
 
-The `NAME` given to the variable block is the name used to
+The `name` given to the variable block is the name used to
 set the variable via the CLI as well as reference the variable
 throughout the Terraform configuration.
 
 Within the block (the `{ }`) is configuration for the variable.
 These are the parameters that can be set:
 
-  * `default` (optional) - If set, this sets a default value
-    for the variable. If this isn't set, the variable is required
-    and Terraform will error if not set. The default value can be
-    a string or a mapping. This is covered in more detail below.
+  * `type` (optional) - If set this defines the type of the variable.
+    Valid values are `string`, `list`, and `map`. If this field is omitted, the
+    variable type will be inferred based on the `default`. If no `default` is
+    provided, the type is assumed to be `string`.
+
+  * `default` (optional) - This sets a default value for the variable.
+    If no default is provided, the variable is considered required and
+    Terraform will error if it is not set. The default value can be any of the
+    data types Terraform supports. This is covered in more detail below.
 
   * `description` (optional) - A human-friendly description for
     the variable. This is primarily for documentation for users
@@ -59,18 +72,34 @@ These are the parameters that can be set:
 
 ------
 
-**Default values** can be either strings or maps. If a default
-value is omitted and the variable is required, the value assigned
-via the CLI must be a string.
+-> **Note**: Default values can be strings, lists, or maps. If a default is
+specified, it must match the declared type of the variable.
+
+### Strings
 
 String values are simple and represent a basic key to value
 mapping where the key is the variable name. An example is:
 
 ```
 variable "key" {
-	default = "value"
+  type    = "string"
+  default = "value"
 }
 ```
+
+A multi-line string value can be provided using heredoc syntax.
+
+```
+variable "long_key" {
+  type = "string"
+  default = <<EOF
+This is a long key.
+Running over several lines.
+EOF
+}
+```
+
+### Maps
 
 A map allows a key to contain a lookup table. This is useful
 for some values that change depending on some external pivot.
@@ -79,16 +108,103 @@ An example:
 
 ```
 variable "images" {
-	default = {
-		us-east-1 = "image-1234"
-		us-west-2 = "image-4567"
-	}
+  type = "map"
+  default = {
+    us-east-1 = "image-1234"
+    us-west-2 = "image-4567"
+  }
 }
 ```
 
-The usage of maps, strings, etc. is documented fully in the
+### Lists
+
+A list can also be useful to store certain variables. For example:
+
+```
+variable "users" {
+  type    = "list"
+  default = ["admin", "ubuntu"]
+}
+```
+
+The usage of maps, lists, strings, etc. is documented fully in the
 [interpolation syntax](/docs/configuration/interpolation.html)
 page.
+
+## Syntax
+
+The full syntax is:
+
+```
+variable NAME {
+  [type = TYPE]
+  [default = DEFAULT]
+  [description = DESCRIPTION]
+}
+```
+
+where `DEFAULT` is:
+
+```
+VALUE
+
+[
+  VALUE,
+  ...
+]
+
+{
+  KEY = VALUE
+  ...
+}
+```
+
+### Booleans
+
+Although it appears Terraform supports boolean types, they are instead
+silently converted to string types. The implications of this are subtle and
+should be completely understood if you plan on using boolean values.
+
+It is instead recommended you avoid using boolean values for now and use
+explicit strings. A future version of Terraform will properly support
+booleans and using the current behavior could result in backwards-incompatibilities
+in the future.
+
+For a configuration such as the following:
+
+```
+variable "active" {
+    default = false
+}
+```
+
+The false is converted to a string `"0"` when running Terraform.
+
+Then, depending on where you specify overrides, the behavior can differ:
+
+  * Variables with boolean values in a `tfvars` file will likewise be
+    converted to "0" and "1" values.
+
+  * Variables specified via the `-var` command line flag will be literal
+    strings "true" and "false", so care should be taken to explicitly use
+    "0" or "1".
+
+  * Variables specified with the `TF_VAR_` environment variables will
+    be literal string values, just like `-var`.
+
+A future version of Terraform will fully support first-class boolean
+types which will make the behavior of booleans consistent as you would
+expect. This may break some of the above behavior.
+
+When passing boolean-like variables as parameters to resource configurations
+that expect boolean values, they are converted consistently:
+
+  * "1", "true", "t" all become `true`
+  * "0", "false", "f" all become `false`
+
+The behavior of conversion above will likely not change in future
+Terraform versions. Therefore, simply using string values rather than
+booleans for variables is recommended.
 
 ## Environment Variables
 
@@ -106,27 +222,99 @@ The variable can be set via an environment variable:
 
 ```
 $ TF_VAR_image=foo terraform apply
-...
 ```
 
-## Syntax
+Maps and lists can be specified using environment variables as well using
+[HCL](/docs/configuration/syntax.html#HCL) syntax in the value.
 
-The full syntax is:
+For a list variable like so:
 
 ```
-variable NAME {
-	[default = DEFAULT]
-	[description = DESCRIPTION]
+variable "somelist" {
+  type = "list"
 }
 ```
 
-where `DEFAULT` is:
+The variable could be set like so:
 
 ```
-VALUE
+$ TF_VAR_somelist='["ami-abc123", "ami-bcd234"]' terraform plan
+```
 
-{
-	KEY = VALUE
-	...
+Similarly, for a map declared like:
+
+```
+variable "somemap" {
+  type = "map"
 }
 ```
+
+The value can be set like this:
+
+```
+$ TF_VAR_somemap='{foo = "bar", baz = "qux"}' terraform plan
+```
+
+## Variable Files
+
+<a id="variable-files"></a>
+
+Variables can be collected in files and passed all at once using the
+`-var-file=foo.tfvars` flag.
+
+If a file named `terraform.tfvars` is present in the current directory,
+Terraform automatically loads it to populate variables. If the file is named
+something else, you can pass the path to the file using the `-var-file`
+flag.
+
+Variables files use HCL or JSON to define variable values. Strings, lists or
+maps may be set in the same manner as the default value in a `variable` block
+in Terraform configuration. For example:
+
+```
+foo = "bar"
+xyz = "abc"
+somelist = [
+  "one",
+  "two",
+]
+somemap = {
+  foo = "bar"
+  bax = "qux"
+}
+```
+
+The `-var-file` flag can be used multiple times per command invocation:
+
+```
+terraform apply -var-file=foo.tfvars -var-file=bar.tfvars
+```
+
+-> **Note**: Variable files are evaluated in the order in which they are specified
+on the command line. If a variable is defined in more than one variable file,
+the last value specified is effective.
+
+### Precedence example
+
+Both these files have the variable `baz` defined:
+
+_foo.tfvars_
+
+```
+baz = "foo"
+```
+
+_bar.tfvars_
+
+```
+baz = "bar"
+```
+
+When they are passed in the following order:
+
+```
+terraform apply -var-file=foo.tfvars -var-file=bar.tfvars
+```
+
+The result will be that `baz` will contain the value `bar` because `bar.tfvars`
+has the last definition loaded.

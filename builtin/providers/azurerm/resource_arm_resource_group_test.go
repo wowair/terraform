@@ -2,21 +2,25 @@ package azurerm
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/core/http"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
 func TestAccAzureRMResourceGroup_basic(t *testing.T) {
+	ri := acctest.RandInt()
+	config := fmt.Sprintf(testAccAzureRMResourceGroup_basic, ri)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testCheckAzureRMResourceGroupDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAzureRMResourceGroup_basic,
+				Config: config,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMResourceGroupExists("azurerm_resource_group.test"),
 				),
@@ -25,18 +29,43 @@ func TestAccAzureRMResourceGroup_basic(t *testing.T) {
 	})
 }
 
-func TestAccAzureRMResourceGroup_withTags(t *testing.T) {
+func TestAccAzureRMResourceGroup_disappears(t *testing.T) {
+	ri := acctest.RandInt()
+	config := fmt.Sprintf(testAccAzureRMResourceGroup_basic, ri)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testCheckAzureRMResourceGroupDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAzureRMResourceGroup_withTags,
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					testCheckAzureRMResourceGroupExists("azurerm_resource_group.test"),
+					testCheckAzureRMResourceGroupDisappears("azurerm_resource_group.test"),
+				),
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
+func TestAccAzureRMResourceGroup_withTags(t *testing.T) {
+	ri := acctest.RandInt()
+	preConfig := fmt.Sprintf(testAccAzureRMResourceGroup_withTags, ri)
+	postConfig := fmt.Sprintf(testAccAzureRMResourceGroup_withTagsUpdated, ri)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testCheckAzureRMResourceGroupDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: preConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMResourceGroupExists("azurerm_resource_group.test"),
 					resource.TestCheckResourceAttr(
-						"azurerm_resource_group.test", "tags.#", "2"),
+						"azurerm_resource_group.test", "tags.%", "2"),
 					resource.TestCheckResourceAttr(
 						"azurerm_resource_group.test", "tags.environment", "Production"),
 					resource.TestCheckResourceAttr(
@@ -45,11 +74,11 @@ func TestAccAzureRMResourceGroup_withTags(t *testing.T) {
 			},
 
 			resource.TestStep{
-				Config: testAccAzureRMResourceGroup_withTagsUpdated,
+				Config: postConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMResourceGroupExists("azurerm_resource_group.test"),
 					resource.TestCheckResourceAttr(
-						"azurerm_resource_group.test", "tags.#", "1"),
+						"azurerm_resource_group.test", "tags.%", "1"),
 					resource.TestCheckResourceAttr(
 						"azurerm_resource_group.test", "tags.environment", "staging"),
 				),
@@ -84,6 +113,28 @@ func testCheckAzureRMResourceGroupExists(name string) resource.TestCheckFunc {
 	}
 }
 
+func testCheckAzureRMResourceGroupDisappears(name string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		// Ensure we have enough information in state to look up in API
+		rs, ok := s.RootModule().Resources[name]
+		if !ok {
+			return fmt.Errorf("Not found: %s", name)
+		}
+
+		resourceGroup := rs.Primary.Attributes["name"]
+
+		// Ensure resource group exists in API
+		conn := testAccProvider.Meta().(*ArmClient).resourceGroupClient
+
+		_, err := conn.Delete(resourceGroup, make(chan struct{}))
+		if err != nil {
+			return fmt.Errorf("Bad: Delete on resourceGroupClient: %s", err)
+		}
+
+		return nil
+	}
+}
+
 func testCheckAzureRMResourceGroupDestroy(s *terraform.State) error {
 	conn := testAccProvider.Meta().(*ArmClient).resourceGroupClient
 
@@ -109,26 +160,26 @@ func testCheckAzureRMResourceGroupDestroy(s *terraform.State) error {
 
 var testAccAzureRMResourceGroup_basic = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1_basic"
+    name = "acctestRG-%d"
     location = "West US"
 }
 `
 
 var testAccAzureRMResourceGroup_withTags = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1_basic"
+    name = "acctestRG-%d"
     location = "West US"
 
     tags {
-	environment = "Production"
-	cost_center = "MSFT"
+		environment = "Production"
+		cost_center = "MSFT"
     }
 }
 `
 
 var testAccAzureRMResourceGroup_withTagsUpdated = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1_basic"
+    name = "acctestRG-%d"
     location = "West US"
 
     tags {

@@ -3,10 +3,10 @@ package google
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"google.golang.org/api/compute/v1"
-	"google.golang.org/api/googleapi"
 )
 
 func resourceComputeAutoscaler() *schema.Resource {
@@ -15,6 +15,9 @@ func resourceComputeAutoscaler() *schema.Resource {
 		Read:   resourceComputeAutoscalerRead,
 		Update: resourceComputeAutoscalerUpdate,
 		Delete: resourceComputeAutoscalerDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
@@ -23,14 +26,15 @@ func resourceComputeAutoscaler() *schema.Resource {
 				Required: true,
 			},
 
-			"description": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-
 			"target": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+			},
+
+			"zone": &schema.Schema{
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
 			},
 
 			"autoscaling_policy": &schema.Schema{
@@ -105,9 +109,14 @@ func resourceComputeAutoscaler() *schema.Resource {
 				},
 			},
 
-			"zone": &schema.Schema{
+			"description": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+			},
+
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
 				ForceNew: true,
 			},
 
@@ -120,7 +129,6 @@ func resourceComputeAutoscaler() *schema.Resource {
 }
 
 func buildAutoscaler(d *schema.ResourceData) (*compute.Autoscaler, error) {
-
 	// Build the parameter
 	scaler := &compute.Autoscaler{
 		Name:   d.Get("name").(string),
@@ -200,10 +208,15 @@ func buildAutoscaler(d *schema.ResourceData) (*compute.Autoscaler, error) {
 func resourceComputeAutoscalerCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Get the zone
 	log.Printf("[DEBUG] Loading zone: %s", d.Get("zone").(string))
 	zone, err := config.clientCompute.Zones.Get(
-		config.Project, d.Get("zone").(string)).Do()
+		project, d.Get("zone").(string)).Do()
 	if err != nil {
 		return fmt.Errorf(
 			"Error loading zone '%s': %s", d.Get("zone").(string), err)
@@ -215,7 +228,7 @@ func resourceComputeAutoscalerCreate(d *schema.ResourceData, meta interface{}) e
 	}
 
 	op, err := config.clientCompute.Autoscalers.Insert(
-		config.Project, zone.Name, scaler).Do()
+		project, zone.Name, scaler).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating Autoscaler: %s", err)
 	}
@@ -223,7 +236,7 @@ func resourceComputeAutoscalerCreate(d *schema.ResourceData, meta interface{}) e
 	// It probably maybe worked, so store the ID now
 	d.SetId(scaler.Name)
 
-	err = computeOperationWaitZone(config, op, zone.Name, "Creating Autoscaler")
+	err = computeOperationWaitZone(config, op, project, zone.Name, "Creating Autoscaler")
 	if err != nil {
 		return err
 	}
@@ -231,31 +244,86 @@ func resourceComputeAutoscalerCreate(d *schema.ResourceData, meta interface{}) e
 	return resourceComputeAutoscalerRead(d, meta)
 }
 
+func flattenAutoscalingPolicy(policy *compute.AutoscalingPolicy) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, 1)
+	policyMap := make(map[string]interface{})
+	policyMap["max_replicas"] = policy.MaxNumReplicas
+	policyMap["min_replicas"] = policy.MinNumReplicas
+	policyMap["cooldown_period"] = policy.CoolDownPeriodSec
+	if policy.CpuUtilization != nil {
+		cpuUtils := make([]map[string]interface{}, 0, 1)
+		cpuUtil := make(map[string]interface{})
+		cpuUtil["target"] = policy.CpuUtilization.UtilizationTarget
+		cpuUtils = append(cpuUtils, cpuUtil)
+		policyMap["cpu_utilization"] = cpuUtils
+	}
+	if policy.LoadBalancingUtilization != nil {
+		loadBalancingUtils := make([]map[string]interface{}, 0, 1)
+		loadBalancingUtil := make(map[string]interface{})
+		loadBalancingUtil["target"] = policy.LoadBalancingUtilization.UtilizationTarget
+		loadBalancingUtils = append(loadBalancingUtils, loadBalancingUtil)
+		policyMap["load_balancing_utilization"] = loadBalancingUtils
+	}
+	if policy.CustomMetricUtilizations != nil {
+		metricUtils := make([]map[string]interface{}, 0, len(policy.CustomMetricUtilizations))
+		for _, customMetricUtilization := range policy.CustomMetricUtilizations {
+			metricUtil := make(map[string]interface{})
+			metricUtil["target"] = customMetricUtilization.UtilizationTarget
+
+			metricUtils = append(metricUtils, metricUtil)
+		}
+		policyMap["metric"] = metricUtils
+	}
+	result = append(result, policyMap)
+	return result
+}
+
 func resourceComputeAutoscalerRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	zone := d.Get("zone").(string)
-	scaler, err := config.clientCompute.Autoscalers.Get(
-		config.Project, zone, d.Id()).Do()
+	project, err := getProject(d, config)
 	if err != nil {
-		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
-			// The resource doesn't exist anymore
-			log.Printf("[WARN] Removing Autoscalar %q because it's gone", d.Get("name").(string))
-			d.SetId("")
-
-			return nil
-		}
-
-		return fmt.Errorf("Error reading Autoscaler: %s", err)
+		return err
 	}
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+	var getAutoscaler = func(zone string) (interface{}, error) {
+		return config.clientCompute.Autoscalers.Get(project, zone, d.Id()).Do()
+	}
+
+	resource, err := getZonalResourceFromRegion(getAutoscaler, region, config.clientCompute, project)
+	if err != nil {
+		return err
+	}
+	if resource == nil {
+		log.Printf("[WARN] Removing Autoscalar %q because it's gone", d.Get("name").(string))
+		d.SetId("")
+		return nil
+	}
+	scaler := resource.(*compute.Autoscaler)
+	zoneUrl := strings.Split(scaler.Zone, "/")
 	d.Set("self_link", scaler.SelfLink)
+	d.Set("name", scaler.Name)
+	d.Set("target", scaler.Target)
+	d.Set("zone", zoneUrl[len(zoneUrl)-1])
+	d.Set("description", scaler.Description)
+	if scaler.AutoscalingPolicy != nil {
+		d.Set("autoscaling_policy", flattenAutoscalingPolicy(scaler.AutoscalingPolicy))
+	}
 
 	return nil
 }
 
 func resourceComputeAutoscalerUpdate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
 
 	zone := d.Get("zone").(string)
 
@@ -265,7 +333,7 @@ func resourceComputeAutoscalerUpdate(d *schema.ResourceData, meta interface{}) e
 	}
 
 	op, err := config.clientCompute.Autoscalers.Patch(
-		config.Project, zone, d.Id(), scaler).Do()
+		project, zone, d.Id(), scaler).Do()
 	if err != nil {
 		return fmt.Errorf("Error updating Autoscaler: %s", err)
 	}
@@ -273,7 +341,7 @@ func resourceComputeAutoscalerUpdate(d *schema.ResourceData, meta interface{}) e
 	// It probably maybe worked, so store the ID now
 	d.SetId(scaler.Name)
 
-	err = computeOperationWaitZone(config, op, zone, "Updating Autoscaler")
+	err = computeOperationWaitZone(config, op, project, zone, "Updating Autoscaler")
 	if err != nil {
 		return err
 	}
@@ -284,14 +352,19 @@ func resourceComputeAutoscalerUpdate(d *schema.ResourceData, meta interface{}) e
 func resourceComputeAutoscalerDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	zone := d.Get("zone").(string)
 	op, err := config.clientCompute.Autoscalers.Delete(
-		config.Project, zone, d.Id()).Do()
+		project, zone, d.Id()).Do()
 	if err != nil {
 		return fmt.Errorf("Error deleting autoscaler: %s", err)
 	}
 
-	err = computeOperationWaitZone(config, op, zone, "Deleting Autoscaler")
+	err = computeOperationWaitZone(config, op, project, zone, "Deleting Autoscaler")
 	if err != nil {
 		return err
 	}

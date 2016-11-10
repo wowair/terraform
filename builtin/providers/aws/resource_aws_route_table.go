@@ -20,6 +20,9 @@ func resourceAwsRouteTable() *schema.Resource {
 		Read:   resourceAwsRouteTableRead,
 		Update: resourceAwsRouteTableUpdate,
 		Delete: resourceAwsRouteTableDelete,
+		Importer: &schema.ResourceImporter{
+			State: resourceAwsRouteTableImportState,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"vpc_id": &schema.Schema{
@@ -34,9 +37,7 @@ func resourceAwsRouteTable() *schema.Resource {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				Set:      schema.HashString,
 			},
 
 			"route": &schema.Schema{
@@ -109,7 +110,7 @@ func resourceAwsRouteTableCreate(d *schema.ResourceData, meta interface{}) error
 		Pending: []string{"pending"},
 		Target:  []string{"ready"},
 		Refresh: resourceAwsRouteTableStateRefreshFunc(conn, d.Id()),
-		Timeout: 1 * time.Minute,
+		Timeout: 2 * time.Minute,
 	}
 	if _, err := stateConf.WaitForState(); err != nil {
 		return fmt.Errorf(
@@ -300,7 +301,19 @@ func resourceAwsRouteTableUpdate(d *schema.ResourceData, meta interface{}) error
 			}
 
 			log.Printf("[INFO] Creating route for %s: %#v", d.Id(), opts)
-			if _, err := conn.CreateRoute(&opts); err != nil {
+			err := resource.Retry(1*time.Minute, func() *resource.RetryError {
+				_, err := conn.CreateRoute(&opts)
+				if err != nil {
+					if awsErr, ok := err.(awserr.Error); ok {
+						if awsErr.Code() == "InvalidRouteTableID.NotFound" {
+							return resource.RetryableError(awsErr)
+						}
+					}
+					return resource.NonRetryableError(err)
+				}
+				return nil
+			})
+			if err != nil {
 				return err
 			}
 
@@ -374,7 +387,7 @@ func resourceAwsRouteTableDelete(d *schema.ResourceData, meta interface{}) error
 		Pending: []string{"ready"},
 		Target:  []string{},
 		Refresh: resourceAwsRouteTableStateRefreshFunc(conn, d.Id()),
-		Timeout: 1 * time.Minute,
+		Timeout: 2 * time.Minute,
 	}
 	if _, err := stateConf.WaitForState(); err != nil {
 		return fmt.Errorf(

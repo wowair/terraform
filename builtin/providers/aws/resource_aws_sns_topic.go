@@ -1,23 +1,22 @@
 package aws
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
-	"github.com/hashicorp/terraform/helper/resource"
-	"github.com/hashicorp/terraform/helper/schema"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/sns"
+	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/terraform/helper/resource"
+	"github.com/hashicorp/terraform/helper/schema"
 )
 
 // Mutable attributes
 var SNSAttributeMap = map[string]string{
+	"arn":             "TopicArn",
 	"display_name":    "DisplayName",
 	"policy":          "Policy",
 	"delivery_policy": "DeliveryPolicy",
@@ -29,6 +28,9 @@ func resourceAwsSnsTopic() *schema.Resource {
 		Read:   resourceAwsSnsTopicRead,
 		Update: resourceAwsSnsTopicUpdate,
 		Delete: resourceAwsSnsTopicDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
@@ -42,21 +44,14 @@ func resourceAwsSnsTopic() *schema.Resource {
 				ForceNew: false,
 			},
 			"policy": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				Computed: true,
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateFunc:     validateJsonString,
+				DiffSuppressFunc: suppressEquivalentAwsPolicyDiffs,
 				StateFunc: func(v interface{}) string {
-					s, ok := v.(string)
-					if !ok || s == "" {
-						return ""
-					}
-					jsonb := []byte(s)
-					buffer := new(bytes.Buffer)
-					if err := json.Compact(buffer, jsonb); err != nil {
-						log.Printf("[WARN] Error compacting JSON for Policy in SNS Topic")
-						return ""
-					}
-					return buffer.String()
+					json, _ := normalizeJsonString(v)
+					return json
 				},
 			},
 			"delivery_policy": &schema.Schema{
@@ -161,8 +156,13 @@ func resourceAwsSnsTopicRead(d *schema.ResourceData, meta interface{}) error {
 	attributeOutput, err := snsconn.GetTopicAttributes(&sns.GetTopicAttributesInput{
 		TopicArn: aws.String(d.Id()),
 	})
-
 	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == "NotFound" {
+			log.Printf("[WARN] SNS Topic (%s) not found, error code (404)", d.Id())
+			d.SetId("")
+			return nil
+		}
+
 		return err
 	}
 
@@ -171,17 +171,36 @@ func resourceAwsSnsTopicRead(d *schema.ResourceData, meta interface{}) error {
 		resource := *resourceAwsSnsTopic()
 		// iKey = internal struct key, oKey = AWS Attribute Map key
 		for iKey, oKey := range SNSAttributeMap {
-			log.Printf("[DEBUG] Updating %s => %s", iKey, oKey)
+			log.Printf("[DEBUG] Reading %s => %s", iKey, oKey)
 
 			if attrmap[oKey] != nil {
 				// Some of the fetched attributes are stateful properties such as
 				// the number of subscriptions, the owner, etc. skip those
 				if resource.Schema[iKey] != nil {
-					value := *attrmap[oKey]
-					log.Printf("[DEBUG] Updating %s => %s -> %s", iKey, oKey, value)
-					d.Set(iKey, *attrmap[oKey])
+					var value string
+					if iKey == "policy" {
+						value, err = normalizeJsonString(*attrmap[oKey])
+						if err != nil {
+							return errwrap.Wrapf("policy contains an invalid JSON: {{err}}", err)
+						}
+					} else {
+						value = *attrmap[oKey]
+					}
+					log.Printf("[DEBUG] Reading %s => %s -> %s", iKey, oKey, value)
+					d.Set(iKey, value)
 				}
 			}
+		}
+	}
+
+	// If we have no name set (import) then determine it from the ARN.
+	// This is a bit of a heuristic for now since AWS provides no other
+	// way to get it.
+	if _, ok := d.GetOk("name"); !ok {
+		arn := d.Get("arn").(string)
+		idx := strings.LastIndex(arn, ":")
+		if idx > -1 {
+			d.Set("name", arn[idx+1:])
 		}
 	}
 

@@ -6,21 +6,31 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 
+	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/terraform/helper/logging"
-	"github.com/hashicorp/terraform/plugin"
+	"github.com/hashicorp/terraform/terraform"
+	"github.com/mattn/go-colorable"
 	"github.com/mitchellh/cli"
 	"github.com/mitchellh/panicwrap"
 	"github.com/mitchellh/prefixedio"
 )
 
 func main() {
+	// Override global prefix set by go-dynect during init()
+	log.SetPrefix("")
 	os.Exit(realMain())
 }
 
 func realMain() int {
 	var wrapConfig panicwrap.WrapConfig
+
+	// don't re-exec terraform as a child process for easier debugging
+	if os.Getenv("TF_FORK") == "0" {
+		return wrappedMain()
+	}
 
 	if !panicwrap.Wrapped(&wrapConfig) {
 		// Determine where logs should go in general (requested by the user)
@@ -77,14 +87,18 @@ func realMain() int {
 }
 
 func wrappedMain() int {
+	// We always need to close the DebugInfo before we exit.
+	defer terraform.CloseDebugInfo()
+
 	log.SetOutput(os.Stderr)
 	log.Printf(
 		"[INFO] Terraform version: %s %s %s",
 		Version, VersionPrerelease, GitCommit)
+	log.Printf("[INFO] CLI args: %#v", os.Args)
 
 	// Load the configuration
 	config := BuiltinConfig
-	if err := config.Discover(); err != nil {
+	if err := config.Discover(Ui); err != nil {
 		Ui.Error(fmt.Sprintf("Error discovering plugins: %s", err))
 		return 1
 	}
@@ -111,7 +125,7 @@ func wrappedMain() int {
 	cli := &cli.CLI{
 		Args:       args,
 		Commands:   Commands,
-		HelpFunc:   cli.BasicHelpFunc("terraform"),
+		HelpFunc:   helpFunc,
 		HelpWriter: os.Stdout,
 	}
 
@@ -200,19 +214,27 @@ func copyOutput(r io.Reader, doneCh chan<- struct{}) {
 		panic(err)
 	}
 
+	var stdout io.Writer = os.Stdout
+	var stderr io.Writer = os.Stderr
+
+	if runtime.GOOS == "windows" {
+		stdout = colorable.NewColorableStdout()
+		stderr = colorable.NewColorableStderr()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stderr, stderrR)
+		io.Copy(stderr, stderrR)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stdout, stdoutR)
+		io.Copy(stdout, stdoutR)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stdout, defaultR)
+		io.Copy(stdout, defaultR)
 	}()
 
 	wg.Wait()

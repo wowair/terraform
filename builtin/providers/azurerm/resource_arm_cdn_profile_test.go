@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -19,19 +20,23 @@ func TestResourceAzureRMCdnProfileSKU_validation(t *testing.T) {
 			ErrCount: 1,
 		},
 		{
-			Value:    "Standard",
+			Value:    "Standard_Verizon",
 			ErrCount: 0,
 		},
 		{
-			Value:    "Premium",
+			Value:    "Premium_Verizon",
 			ErrCount: 0,
 		},
 		{
-			Value:    "STANDARD",
+			Value:    "Standard_Akamai",
 			ErrCount: 0,
 		},
 		{
-			Value:    "PREMIUM",
+			Value:    "STANDARD_AKAMAI",
+			ErrCount: 0,
+		},
+		{
+			Value:    "standard_akamai",
 			ErrCount: 0,
 		},
 	}
@@ -47,13 +52,16 @@ func TestResourceAzureRMCdnProfileSKU_validation(t *testing.T) {
 
 func TestAccAzureRMCdnProfile_basic(t *testing.T) {
 
+	ri := acctest.RandInt()
+	config := fmt.Sprintf(testAccAzureRMCdnProfile_basic, ri, ri)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testCheckAzureRMCdnProfileDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccAzureRMCdnProfile_basic,
+			{
+				Config: config,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMCdnProfileExists("azurerm_cdn_profile.test"),
 				),
@@ -64,17 +72,21 @@ func TestAccAzureRMCdnProfile_basic(t *testing.T) {
 
 func TestAccAzureRMCdnProfile_withTags(t *testing.T) {
 
+	ri := acctest.RandInt()
+	preConfig := fmt.Sprintf(testAccAzureRMCdnProfile_withTags, ri, ri)
+	postConfig := fmt.Sprintf(testAccAzureRMCdnProfile_withTagsUpdate, ri, ri)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testCheckAzureRMCdnProfileDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccAzureRMCdnProfile_withTags,
+			{
+				Config: preConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMCdnProfileExists("azurerm_cdn_profile.test"),
 					resource.TestCheckResourceAttr(
-						"azurerm_cdn_profile.test", "tags.#", "2"),
+						"azurerm_cdn_profile.test", "tags.%", "2"),
 					resource.TestCheckResourceAttr(
 						"azurerm_cdn_profile.test", "tags.environment", "Production"),
 					resource.TestCheckResourceAttr(
@@ -82,12 +94,12 @@ func TestAccAzureRMCdnProfile_withTags(t *testing.T) {
 				),
 			},
 
-			resource.TestStep{
-				Config: testAccAzureRMCdnProfile_withTagsUpdate,
+			{
+				Config: postConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testCheckAzureRMCdnProfileExists("azurerm_cdn_profile.test"),
 					resource.TestCheckResourceAttr(
-						"azurerm_cdn_profile.test", "tags.#", "1"),
+						"azurerm_cdn_profile.test", "tags.%", "1"),
 					resource.TestCheckResourceAttr(
 						"azurerm_cdn_profile.test", "tags.environment", "staging"),
 				),
@@ -152,27 +164,27 @@ func testCheckAzureRMCdnProfileDestroy(s *terraform.State) error {
 
 var testAccAzureRMCdnProfile_basic = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1"
+    name = "acctestRG-%d"
     location = "West US"
 }
 resource "azurerm_cdn_profile" "test" {
-    name = "acceptanceTestCdnProfile1"
+    name = "acctestcdnprof%d"
     location = "West US"
     resource_group_name = "${azurerm_resource_group.test.name}"
-    sku = "Standard"
+    sku = "Standard_Verizon"
 }
 `
 
 var testAccAzureRMCdnProfile_withTags = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1"
+    name = "acctestRG-%d"
     location = "West US"
 }
 resource "azurerm_cdn_profile" "test" {
-    name = "acceptanceTestCdnProfile1"
+    name = "acctestcdnprof%d"
     location = "West US"
     resource_group_name = "${azurerm_resource_group.test.name}"
-    sku = "Standard"
+    sku = "Standard_Verizon"
 
     tags {
 	environment = "Production"
@@ -183,14 +195,14 @@ resource "azurerm_cdn_profile" "test" {
 
 var testAccAzureRMCdnProfile_withTagsUpdate = `
 resource "azurerm_resource_group" "test" {
-    name = "acceptanceTestResourceGroup1"
+    name = "acctestRG-%d"
     location = "West US"
 }
 resource "azurerm_cdn_profile" "test" {
-    name = "acceptanceTestCdnProfile1"
+    name = "acctestcdnprof%d"
     location = "West US"
     resource_group_name = "${azurerm_resource_group.test.name}"
-    sku = "Standard"
+    sku = "Standard_Verizon"
 
     tags {
 	environment = "staging"

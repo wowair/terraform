@@ -1,10 +1,8 @@
 package resource
 
 import (
-	"errors"
-	"fmt"
 	"log"
-	"math"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,7 +26,11 @@ type StateChangeConf struct {
 	Target         []string         // Target state
 	Timeout        time.Duration    // The amount of time to wait before timeout
 	MinTimeout     time.Duration    // Smallest time to wait before refreshes
+	PollInterval   time.Duration    // Override MinTimeout/backoff and only poll this often
 	NotFoundChecks int              // Number of times to allow not found
+
+	// This is to work around inconsistent APIs
+	ContinuousTargetOccurence int // Number of times the Target state has to occur continuously
 }
 
 // WaitForState watches an object and waits for it to achieve the state
@@ -49,14 +51,26 @@ func (conf *StateChangeConf) WaitForState() (interface{}, error) {
 	log.Printf("[DEBUG] Waiting for state to become: %s", conf.Target)
 
 	notfoundTick := 0
+	targetOccurence := 0
 
 	// Set a default for times to check for not found
 	if conf.NotFoundChecks == 0 {
 		conf.NotFoundChecks = 20
 	}
 
-	var result interface{}
-	var resulterr error
+	if conf.ContinuousTargetOccurence == 0 {
+		conf.ContinuousTargetOccurence = 1
+	}
+
+	// We can't safely read the result values if we timeout, so store them in
+	// an atomic.Value
+	type Result struct {
+		Result interface{}
+		State  string
+		Error  error
+	}
+	var lastResult atomic.Value
+	lastResult.Store(Result{})
 
 	doneCh := make(chan struct{})
 	go func() {
@@ -65,75 +79,112 @@ func (conf *StateChangeConf) WaitForState() (interface{}, error) {
 		// Wait for the delay
 		time.Sleep(conf.Delay)
 
-		var err error
-		for tries := 0; ; tries++ {
-			// Wait between refreshes using an exponential backoff
-			wait := time.Duration(math.Pow(2, float64(tries))) *
-				100 * time.Millisecond
-			if wait < conf.MinTimeout {
-				wait = conf.MinTimeout
-			} else if wait > 10*time.Second {
-				wait = 10 * time.Second
+		wait := 100 * time.Millisecond
+
+		for {
+			res, currentState, err := conf.Refresh()
+			result := Result{
+				Result: res,
+				State:  currentState,
+				Error:  err,
 			}
+			lastResult.Store(result)
 
-			log.Printf("[TRACE] Waiting %s before next try", wait)
-			time.Sleep(wait)
-
-			var currentState string
-			result, currentState, err = conf.Refresh()
 			if err != nil {
-				resulterr = err
 				return
 			}
 
 			// If we're waiting for the absence of a thing, then return
-			if result == nil && len(conf.Target) == 0 {
-				return
+			if res == nil && len(conf.Target) == 0 {
+				targetOccurence += 1
+				if conf.ContinuousTargetOccurence == targetOccurence {
+					return
+				} else {
+					continue
+				}
 			}
 
-			if result == nil {
+			if res == nil {
 				// If we didn't find the resource, check if we have been
 				// not finding it for awhile, and if so, report an error.
 				notfoundTick += 1
 				if notfoundTick > conf.NotFoundChecks {
-					resulterr = errors.New("couldn't find resource")
+					result.Error = &NotFoundError{
+						LastError: err,
+					}
+					lastResult.Store(result)
 					return
 				}
 			} else {
 				// Reset the counter for when a resource isn't found
 				notfoundTick = 0
+				found := false
 
 				for _, allowed := range conf.Target {
 					if currentState == allowed {
-						return
+						found = true
+						targetOccurence += 1
+						if conf.ContinuousTargetOccurence == targetOccurence {
+							return
+						} else {
+							continue
+						}
 					}
 				}
 
-				found := false
 				for _, allowed := range conf.Pending {
 					if currentState == allowed {
 						found = true
+						targetOccurence = 0
 						break
 					}
 				}
 
 				if !found {
-					resulterr = fmt.Errorf(
-						"unexpected state '%s', wanted target '%s'",
-						currentState,
-						conf.Target)
+					result.Error = &UnexpectedStateError{
+						LastError:     err,
+						State:         result.State,
+						ExpectedState: conf.Target,
+					}
+					lastResult.Store(result)
 					return
 				}
+			}
+
+			// If a poll interval has been specified, choose that interval.
+			// Otherwise bound the default value.
+			if conf.PollInterval > 0 && conf.PollInterval < 180*time.Second {
+				wait = conf.PollInterval
+			} else {
+				if wait < conf.MinTimeout {
+					wait = conf.MinTimeout
+				} else if wait > 10*time.Second {
+					wait = 10 * time.Second
+				}
+			}
+
+			log.Printf("[TRACE] Waiting %s before next try", wait)
+			time.Sleep(wait)
+
+			// Wait between refreshes using exponential backoff, except when
+			// waiting for the target state to reoccur.
+			if targetOccurence == 0 {
+				wait *= 2
 			}
 		}
 	}()
 
 	select {
 	case <-doneCh:
-		return result, resulterr
+		r := lastResult.Load().(Result)
+		return r.Result, r.Error
 	case <-time.After(conf.Timeout):
-		return nil, fmt.Errorf(
-			"timeout while waiting for state to become '%s'",
-			conf.Target)
+		r := lastResult.Load().(Result)
+		return nil, &TimeoutError{
+			LastError:     r.Error,
+			LastState:     r.State,
+			Timeout:       conf.Timeout,
+			ExpectedState: conf.Target,
+		}
 	}
 }

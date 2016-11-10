@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/fwaas/firewalls"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
-	"github.com/rackspace/gophercloud"
-	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/fwaas/firewalls"
 )
 
 func TestAccFWFirewallV1_basic(t *testing.T) {
@@ -47,13 +47,13 @@ func testAccCheckFWFirewallV1Destroy(s *terraform.State) error {
 		if rs.Type != "openstack_firewall" {
 			continue
 		}
+
 		_, err = firewalls.Get(networkingClient, rs.Primary.ID).Extract()
 		if err == nil {
 			return fmt.Errorf("Firewall (%s) still exists.", rs.Primary.ID)
 		}
-		httpError, ok := err.(*gophercloud.UnexpectedResponseCodeError)
-		if !ok || httpError.Actual != 404 {
-			return httpError
+		if _, ok := err.(gophercloud.ErrDefault404); !ok {
+			return err
 		}
 	}
 	return nil
@@ -84,17 +84,13 @@ func testAccCheckFWFirewallV1Exists(n, expectedName, expectedDescription string,
 			// if we get a 404 error. Fail on any other error.
 			found, err = firewalls.Get(networkingClient, rs.Primary.ID).Extract()
 			if err != nil {
-				httpError, ok := err.(*gophercloud.UnexpectedResponseCodeError)
-				if !ok || httpError.Actual != 404 {
+				if _, ok := err.(gophercloud.ErrDefault404); ok {
 					time.Sleep(time.Second)
 					continue
 				}
+				return err
 			}
 			break
-		}
-
-		if err != nil {
-			return err
 		}
 
 		if found.Name != expectedName {
@@ -128,9 +124,10 @@ resource "openstack_fw_policy_v1" "accept_test_policy_1" {
 
 const testFirewallConfigUpdated = `
 resource "openstack_fw_firewall_v1" "accept_test" {
-	name = "accept_test"
-	description = "terraform acceptance test"
-	policy_id = "${openstack_fw_policy_v1.accept_test_policy_2.id}"
+        name = "accept_test"
+        description = "terraform acceptance test"
+        policy_id = "${openstack_fw_policy_v1.accept_test_policy_2.id}"
+        admin_state_up = true
 }
 
 resource "openstack_fw_policy_v1" "accept_test_policy_2" {

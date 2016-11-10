@@ -24,21 +24,31 @@ func resourceComputeVpnGateway() *schema.Resource {
 				Required: true,
 				ForceNew: true,
 			},
-			"description": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
-			},
+
 			"network": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
+
+			"description": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"region": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},
+
 			"self_link": &schema.Schema{
 				Type:     schema.TypeString,
 				Computed: true,
@@ -50,10 +60,21 @@ func resourceComputeVpnGateway() *schema.Resource {
 func resourceComputeVpnGatewayCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	name := d.Get("name").(string)
-	network := d.Get("network").(string)
-	region := getOptionalRegion(d, config)
-	project := config.Project
+	network, err := getNetworkLink(d, config, "network")
+	if err != nil {
+		return err
+	}
 
 	vpnGatewaysService := compute.NewTargetVpnGatewaysService(config.clientCompute)
 
@@ -71,7 +92,7 @@ func resourceComputeVpnGatewayCreate(d *schema.ResourceData, meta interface{}) e
 		return fmt.Errorf("Error Inserting VPN Gateway %s into network %s: %s", name, network, err)
 	}
 
-	err = computeOperationWaitRegion(config, op, region, "Inserting VPN Gateway")
+	err = computeOperationWaitRegion(config, op, project, region, "Inserting VPN Gateway")
 	if err != nil {
 		return fmt.Errorf("Error Waiting to Insert VPN Gateway %s into network %s: %s", name, network, err)
 	}
@@ -82,9 +103,17 @@ func resourceComputeVpnGatewayCreate(d *schema.ResourceData, meta interface{}) e
 func resourceComputeVpnGatewayRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	name := d.Get("name").(string)
-	region := d.Get("region").(string)
-	project := config.Project
 
 	vpnGatewaysService := compute.NewTargetVpnGatewaysService(config.clientCompute)
 	vpnGateway, err := vpnGatewaysService.Get(project, region, name).Do()
@@ -110,9 +139,17 @@ func resourceComputeVpnGatewayRead(d *schema.ResourceData, meta interface{}) err
 func resourceComputeVpnGatewayDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	name := d.Get("name").(string)
-	region := d.Get("region").(string)
-	project := config.Project
 
 	vpnGatewaysService := compute.NewTargetVpnGatewaysService(config.clientCompute)
 
@@ -121,7 +158,7 @@ func resourceComputeVpnGatewayDelete(d *schema.ResourceData, meta interface{}) e
 		return fmt.Errorf("Error Reading VPN Gateway %s: %s", name, err)
 	}
 
-	err = computeOperationWaitRegion(config, op, region, "Deleting VPN Gateway")
+	err = computeOperationWaitRegion(config, op, project, region, "Deleting VPN Gateway")
 	if err != nil {
 		return fmt.Errorf("Error Waiting to Delete VPN Gateway %s: %s", name, err)
 	}

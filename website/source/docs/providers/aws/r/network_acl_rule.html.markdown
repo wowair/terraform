@@ -43,6 +43,10 @@ The following arguments are supported:
 * `icmp_type` - (Optional) ICMP protocol: The ICMP type. Required if specifying ICMP for the protocol. e.g. -1
 * `icmp_code` - (Optional) ICMP protocol: The ICMP code. Required if specifying ICMP for the protocol. e.g. -1
 
+~> **NOTE:** If the value of `protocol` is `-1` or `all`, the `from_port` and `to_port` values will be ignored and the rule will apply to all ports.
+
+~> **NOTE:** If the value of `icmp_type` is `-1` (which results in a wildcard ICMP type), the `icmp_code` must also be set to `-1` (wildcard ICMP code).
+
 ~> Note: For more information on ICMP types and codes, see here: http://www.nthelp.com/icmp.html
 
 ## Attributes Reference
@@ -50,4 +54,3 @@ The following arguments are supported:
 The following attributes are exported:
 
 * `id` - The ID of the network ACL Rule
-

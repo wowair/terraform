@@ -16,20 +16,20 @@ func resourceCloudStackNIC() *schema.Resource {
 		Delete: resourceCloudStackNICDelete,
 
 		Schema: map[string]*schema.Schema{
-			"network": &schema.Schema{
+			"network_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"ipaddress": &schema.Schema{
+			"ip_address": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
 				ForceNew: true,
 			},
 
-			"virtual_machine": &schema.Schema{
+			"virtual_machine_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
@@ -41,35 +41,26 @@ func resourceCloudStackNIC() *schema.Resource {
 func resourceCloudStackNICCreate(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
-	// Retrieve the network ID
-	networkid, e := retrieveID(cs, "network", d.Get("network").(string))
-	if e != nil {
-		return e.Error()
-	}
-
-	// Retrieve the virtual_machine ID
-	virtualmachineid, e := retrieveID(cs, "virtual_machine", d.Get("virtual_machine").(string))
-	if e != nil {
-		return e.Error()
-	}
-
 	// Create a new parameter struct
-	p := cs.VirtualMachine.NewAddNicToVirtualMachineParams(networkid, virtualmachineid)
+	p := cs.VirtualMachine.NewAddNicToVirtualMachineParams(
+		d.Get("network_id").(string),
+		d.Get("virtual_machine_id").(string),
+	)
 
 	// If there is a ipaddres supplied, add it to the parameter struct
-	if ipaddress, ok := d.GetOk("ipaddress"); ok {
+	if ipaddress, ok := d.GetOk("ip_address"); ok {
 		p.SetIpaddress(ipaddress.(string))
 	}
 
 	// Create and attach the new NIC
-	r, err := cs.VirtualMachine.AddNicToVirtualMachine(p)
+	r, err := Retry(10, retryableAddNicFunc(cs, p))
 	if err != nil {
 		return fmt.Errorf("Error creating the new NIC: %s", err)
 	}
 
 	found := false
-	for _, n := range r.Nic {
-		if n.Networkid == networkid {
+	for _, n := range r.(*cloudstack.AddNicToVirtualMachineResponse).Nic {
+		if n.Networkid == d.Get("network_id").(string) {
 			d.SetId(n.Id)
 			found = true
 			break
@@ -77,7 +68,7 @@ func resourceCloudStackNICCreate(d *schema.ResourceData, meta interface{}) error
 	}
 
 	if !found {
-		return fmt.Errorf("Could not find NIC ID for network: %s", d.Get("network").(string))
+		return fmt.Errorf("Could not find NIC ID for network ID: %s", d.Get("network_id").(string))
 	}
 
 	return resourceCloudStackNICRead(d, meta)
@@ -87,31 +78,31 @@ func resourceCloudStackNICRead(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
 	// Get the virtual machine details
-	vm, count, err := cs.VirtualMachine.GetVirtualMachineByName(d.Get("virtual_machine").(string))
+	vm, count, err := cs.VirtualMachine.GetVirtualMachineByID(d.Get("virtual_machine_id").(string))
 	if err != nil {
 		if count == 0 {
-			log.Printf("[DEBUG] Instance %s does no longer exist", d.Get("virtual_machine").(string))
+			log.Printf("[DEBUG] Instance %s does no longer exist", d.Get("virtual_machine_id").(string))
 			d.SetId("")
 			return nil
-		} else {
-			return err
 		}
+
+		return err
 	}
 
 	// Read NIC info
 	found := false
 	for _, n := range vm.Nic {
 		if n.Id == d.Id() {
-			d.Set("ipaddress", n.Ipaddress)
-			setValueOrID(d, "network", n.Networkname, n.Networkid)
-			setValueOrID(d, "virtual_machine", vm.Name, vm.Id)
+			d.Set("ip_address", n.Ipaddress)
+			d.Set("network_id", n.Networkid)
+			d.Set("virtual_machine_id", vm.Id)
 			found = true
 			break
 		}
 	}
 
 	if !found {
-		log.Printf("[DEBUG] NIC for network %s does no longer exist", d.Get("network").(string))
+		log.Printf("[DEBUG] NIC for network ID %s does no longer exist", d.Get("network_id").(string))
 		d.SetId("")
 	}
 
@@ -121,14 +112,11 @@ func resourceCloudStackNICRead(d *schema.ResourceData, meta interface{}) error {
 func resourceCloudStackNICDelete(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
-	// Retrieve the virtual_machine ID
-	virtualmachineid, e := retrieveID(cs, "virtual_machine", d.Get("virtual_machine").(string))
-	if e != nil {
-		return e.Error()
-	}
-
 	// Create a new parameter struct
-	p := cs.VirtualMachine.NewRemoveNicFromVirtualMachineParams(d.Id(), virtualmachineid)
+	p := cs.VirtualMachine.NewRemoveNicFromVirtualMachineParams(
+		d.Id(),
+		d.Get("virtual_machine_id").(string),
+	)
 
 	// Remove the NIC
 	_, err := cs.VirtualMachine.RemoveNicFromVirtualMachine(p)
@@ -144,4 +132,14 @@ func resourceCloudStackNICDelete(d *schema.ResourceData, meta interface{}) error
 	}
 
 	return nil
+}
+
+func retryableAddNicFunc(cs *cloudstack.CloudStackClient, p *cloudstack.AddNicToVirtualMachineParams) func() (interface{}, error) {
+	return func() (interface{}, error) {
+		r, err := cs.VirtualMachine.AddNicToVirtualMachine(p)
+		if err != nil {
+			return nil, err
+		}
+		return r, nil
+	}
 }

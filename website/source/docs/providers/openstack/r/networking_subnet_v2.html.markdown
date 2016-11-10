@@ -53,11 +53,16 @@ The following arguments are supported:
     documented below. Changing this creates a new subnet.
 
 * `gateway_ip` - (Optional)  Default gateway used by devices in this subnet.
-    Changing this updates the gateway IP of the existing subnet.
+    Leaving this blank and not setting `no_gateway` will cause a default
+    gateway of `.1` to be used. Changing this updates the gateway IP of the
+    existing subnet.
+
+* `no_gateway` - (Optional) Do not set a gateway IP on this subnet. Changing
+    this removes or adds a default gateway IP of the existing subnet.
 
 * `enable_dhcp` - (Optional) The administrative state of the network.
     Acceptable values are "true" and "false". Changing this value enables or
-    disables the DHCP capabilities of the existing subnet.
+    disables the DHCP capabilities of the existing subnet. Defaults to true.
 
 * `dns_nameservers` - (Optional) An array of DNS name server names used by hosts
     in this subnet. Changing this updates the DNS name servers for the existing
@@ -67,6 +72,8 @@ The following arguments are supported:
     with IPs from this subnet (not including local subnet route). The host_route
     object structure is documented below. Changing this updates the host routes
     for the existing subnet.
+
+* `value_specs` - (Optional) Map of additional options.
 
 The `allocation_pools` block supports:
 
@@ -95,3 +102,11 @@ The following attributes are exported:
 * `enable_dhcp` - See Argument Reference above.
 * `dns_nameservers` - See Argument Reference above.
 * `host_routes` - See Argument Reference above.
+
+## Import
+
+Subnets can be imported using the `id`, e.g.
+
+```
+$ terraform import openstack_networking_subnet_v2.subnet_1 da4faf16-5546-41e4-8330-4d0002b74048
+```

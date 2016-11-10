@@ -54,6 +54,7 @@ func resourceCloudStackTemplate() *schema.Resource {
 			"project": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				Computed: true,
 				ForceNew: true,
 			},
 
@@ -168,14 +169,8 @@ func resourceCloudStackTemplateCreate(d *schema.ResourceData, meta interface{}) 
 	}
 
 	// If there is a project supplied, we retrieve and set the project id
-	if project, ok := d.GetOk("project"); ok {
-		// Retrieve the project ID
-		projectid, e := retrieveID(cs, "project", project.(string))
-		if e != nil {
-			return e.Error()
-		}
-		// Set the default project ID
-		p.SetProjectid(projectid)
+	if err := setProjectid(p, cs, d); err != nil {
+		return err
 	}
 
 	// Create the new template
@@ -213,7 +208,11 @@ func resourceCloudStackTemplateRead(d *schema.ResourceData, meta interface{}) er
 	cs := meta.(*cloudstack.CloudStackClient)
 
 	// Get the template details
-	t, count, err := cs.Template.GetTemplateByID(d.Id(), "executable")
+	t, count, err := cs.Template.GetTemplateByID(
+		d.Id(),
+		"executable",
+		cloudstack.WithProject(d.Get("project").(string)),
+	)
 	if err != nil {
 		if count == 0 {
 			log.Printf(

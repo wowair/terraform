@@ -11,6 +11,8 @@ description: |-
 Provides an AWS EBS Volume Attachment as a top level resource, to attach and
 detach volumes from AWS Instances.
 
+~> **NOTE on EBS block devices:** If you use `ebs_block_device` on an `aws_instance`, Terraform will assume management over the full set of non-root EBS block devices for the instance, and treats additional block devices as drift. For this reason, `ebs_block_device` cannot be mixed with external `aws_ebs_volume` + `aws_ebs_volume_attachment` resources for a given instance.
+
 ## Example Usage
 
 ```
@@ -47,6 +49,11 @@ example, `/dev/sdh` or `xvdh`)
 volume to detach. Useful if previous attempts failed, but use this option only 
 as a last resort, as this can result in **data loss**. See 
 [Detaching an Amazon EBS Volume from an Instance][1] for more information.
+* `skip_destroy` - (Optional, Boolean) Set this to true if you do not wish 
+to detach the volume from the instance to which it is attached at destroy 
+time, and instead just remove the attachment from Terraform state. This is 
+useful when destroying an instance which has volumes created by some other 
+means attached.
 
 ## Attributes Reference
 

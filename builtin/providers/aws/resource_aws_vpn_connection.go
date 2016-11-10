@@ -2,18 +2,49 @@ package aws
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
 
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
+
+type XmlVpnConnectionConfig struct {
+	Tunnels []XmlIpsecTunnel `xml:"ipsec_tunnel"`
+}
+
+type XmlIpsecTunnel struct {
+	OutsideAddress string `xml:"vpn_gateway>tunnel_outside_address>ip_address"`
+	PreSharedKey   string `xml:"ike>pre_shared_key"`
+}
+
+type TunnelInfo struct {
+	Tunnel1Address      string
+	Tunnel1PreSharedKey string
+	Tunnel2Address      string
+	Tunnel2PreSharedKey string
+}
+
+func (slice XmlVpnConnectionConfig) Len() int {
+	return len(slice.Tunnels)
+}
+
+func (slice XmlVpnConnectionConfig) Less(i, j int) bool {
+	return slice.Tunnels[i].OutsideAddress < slice.Tunnels[j].OutsideAddress
+}
+
+func (slice XmlVpnConnectionConfig) Swap(i, j int) {
+	slice.Tunnels[i], slice.Tunnels[j] = slice.Tunnels[j], slice.Tunnels[i]
+}
 
 func resourceAwsVpnConnection() *schema.Resource {
 	return &schema.Resource{
@@ -21,60 +52,84 @@ func resourceAwsVpnConnection() *schema.Resource {
 		Read:   resourceAwsVpnConnectionRead,
 		Update: resourceAwsVpnConnectionUpdate,
 		Delete: resourceAwsVpnConnectionDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
-			"vpn_gateway_id": &schema.Schema{
+			"vpn_gateway_id": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"customer_gateway_id": &schema.Schema{
+			"customer_gateway_id": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"type": &schema.Schema{
+			"type": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"static_routes_only": &schema.Schema{
+			"static_routes_only": {
 				Type:     schema.TypeBool,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
 			},
 
 			"tags": tagsSchema(),
 
 			// Begin read only attributes
-			"customer_gateway_configuration": &schema.Schema{
+			"customer_gateway_configuration": {
 				Type:     schema.TypeString,
 				Computed: true,
 				Optional: true,
 			},
 
-			"routes": &schema.Schema{
+			"tunnel1_address": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"tunnel1_preshared_key": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"tunnel2_address": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"tunnel2_preshared_key": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"routes": {
 				Type:     schema.TypeSet,
 				Computed: true,
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"destination_cidr_block": &schema.Schema{
+						"destination_cidr_block": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
 						},
 
-						"source": &schema.Schema{
+						"source": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
 						},
 
-						"state": &schema.Schema{
+						"state": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
@@ -91,37 +146,37 @@ func resourceAwsVpnConnection() *schema.Resource {
 				},
 			},
 
-			"vgw_telemetry": &schema.Schema{
+			"vgw_telemetry": {
 				Type:     schema.TypeSet,
 				Computed: true,
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"accepted_route_count": &schema.Schema{
+						"accepted_route_count": {
 							Type:     schema.TypeInt,
 							Computed: true,
 							Optional: true,
 						},
 
-						"last_status_change": &schema.Schema{
+						"last_status_change": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
 						},
 
-						"outside_ip_address": &schema.Schema{
+						"outside_ip_address": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
 						},
 
-						"status": &schema.Schema{
+						"status": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
 						},
 
-						"status_message": &schema.Schema{
+						"status_message": {
 							Type:     schema.TypeString,
 							Computed: true,
 							Optional: true,
@@ -250,17 +305,30 @@ func resourceAwsVpnConnectionRead(d *schema.ResourceData, meta interface{}) erro
 		if err := d.Set("static_routes_only", vpnConnection.Options.StaticRoutesOnly); err != nil {
 			return err
 		}
+	} else {
+		//If there no Options on the connection then we do not support *static_routes*
+		d.Set("static_routes_only", false)
 	}
 
 	// Set read only attributes.
 	d.Set("customer_gateway_configuration", vpnConnection.CustomerGatewayConfiguration)
+
+	if vpnConnection.CustomerGatewayConfiguration != nil {
+		if tunnelInfo, err := xmlConfigToTunnelInfo(*vpnConnection.CustomerGatewayConfiguration); err != nil {
+			log.Printf("[ERR] Error unmarshaling XML configuration for (%s): %s", d.Id(), err)
+		} else {
+			d.Set("tunnel1_address", tunnelInfo.Tunnel1Address)
+			d.Set("tunnel1_preshared_key", tunnelInfo.Tunnel1PreSharedKey)
+			d.Set("tunnel2_address", tunnelInfo.Tunnel2Address)
+			d.Set("tunnel2_preshared_key", tunnelInfo.Tunnel2PreSharedKey)
+		}
+	}
+
 	if err := d.Set("vgw_telemetry", telemetryToMapList(vpnConnection.VgwTelemetry)); err != nil {
 		return err
 	}
-	if vpnConnection.Routes != nil {
-		if err := d.Set("routes", routesToMapList(vpnConnection.Routes)); err != nil {
-			return err
-		}
+	if err := d.Set("routes", routesToMapList(vpnConnection.Routes)); err != nil {
+		return err
 	}
 
 	return nil
@@ -354,4 +422,24 @@ func telemetryToMapList(telemetry []*ec2.VgwTelemetry) []map[string]interface{} 
 	}
 
 	return result
+}
+
+func xmlConfigToTunnelInfo(xmlConfig string) (*TunnelInfo, error) {
+	var vpnConfig XmlVpnConnectionConfig
+	if err := xml.Unmarshal([]byte(xmlConfig), &vpnConfig); err != nil {
+		return nil, errwrap.Wrapf("Error Unmarshalling XML: {{err}}", err)
+	}
+
+	// don't expect consistent ordering from the XML
+	sort.Sort(vpnConfig)
+
+	tunnelInfo := TunnelInfo{
+		Tunnel1Address:      vpnConfig.Tunnels[0].OutsideAddress,
+		Tunnel1PreSharedKey: vpnConfig.Tunnels[0].PreSharedKey,
+
+		Tunnel2Address:      vpnConfig.Tunnels[1].OutsideAddress,
+		Tunnel2PreSharedKey: vpnConfig.Tunnels[1].PreSharedKey,
+	}
+
+	return &tunnelInfo, nil
 }

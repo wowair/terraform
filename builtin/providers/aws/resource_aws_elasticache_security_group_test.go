@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/elasticache"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -21,6 +22,8 @@ func TestAccAWSElasticacheSecurityGroup_basic(t *testing.T) {
 				Config: testAccAWSElasticacheSecurityGroupConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSElasticacheSecurityGroupExists("aws_elasticache_security_group.bar"),
+					resource.TestCheckResourceAttr(
+						"aws_elasticache_security_group.bar", "description", "Managed by Terraform"),
 				),
 			},
 		},
@@ -75,20 +78,20 @@ var testAccAWSElasticacheSecurityGroupConfig = fmt.Sprintf(`
 provider "aws" {
   region = "us-east-1"
 }
+
 resource "aws_security_group" "bar" {
-    name = "tf-test-security-group-%03d"
-    description = "tf-test-security-group-descr"
-    ingress {
-        from_port = -1
-        to_port = -1
-        protocol = "icmp"
-        cidr_blocks = ["0.0.0.0/0"]
-    }
+  name = "tf-test-security-group-%03d"
+
+  ingress {
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 resource "aws_elasticache_security_group" "bar" {
-    name = "tf-test-security-group-%03d"
-    description = "tf-test-security-group-descr"
-    security_group_names = ["${aws_security_group.bar.name}"]
+  name                 = "tf-test-security-group-%03d"
+  security_group_names = ["${aws_security_group.bar.name}"]
 }
-`, genRandInt(), genRandInt())
+`, acctest.RandInt(), acctest.RandInt())
